@@ -24,7 +24,7 @@ const CLIENT_HEADERS = {
 };
 
 const CLOUDFLARE_HINT =
-  'Bambu\'s Cloudflare protection blocked the request. Sign in at bambulab.com in a browser, copy the value of its "token" cookie into BAMBU_ACCESS_TOKEN, and restart.';
+  'Bambu\'s Cloudflare protection blocked the request. Sign in at makerworld.com in a browser, copy the value of its "token" cookie into BAMBU_ACCESS_TOKEN, and restart (README: "Finding a Bambu access token").';
 
 const FINISHED = new Set(['finish', 'finished', 'success', 'succeeded', 'completed', 'complete', 'done']);
 const FAILED = new Set(['fail', 'failed', 'failure', 'cancel', 'canceled', 'cancelled', 'abort', 'aborted', 'stopped']);
@@ -297,7 +297,7 @@ export class BambuClient {
       if (res.status === 401) {
         if (this.tokenSource === 'env') {
           throw new SourceError('Bambu rejected BAMBU_ACCESS_TOKEN.', {
-            code: 'bambu_auth', status: 401, hint: 'The token has probably expired. Replace it, or remove it and use BAMBU_EMAIL / BAMBU_PASSWORD.',
+            code: 'bambu_auth', status: 401, hint: 'The token has probably expired. Copy a new one (README: "Finding a Bambu access token"), or remove it and use BAMBU_EMAIL / BAMBU_PASSWORD.',
           });
         }
         await this.clearToken();

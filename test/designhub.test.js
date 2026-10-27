@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { describe, it } from 'node:test';
-import { DesignHubClient, parseAgendaHtml } from '../src/designhub.js';
+import { DesignHubClient, parseAgendaHtml, parseCookieString } from '../src/designhub.js';
 import { createMockUpstream } from './helpers/mock-upstream.js';
 
 const ZONE = 'America/Chicago';
@@ -91,6 +91,33 @@ describe('parseAgendaHtml', () => {
   });
 });
 
+describe('parseCookieString', () => {
+  // As the browser stores it: URL-encoded base64 data, "--", then a signature.
+  const encoded = 'BAh7B0kiD3Nlc3Npb25faWQ%2BrZz%3D%3D--3f2a9c';
+  const decoded = 'BAh7B0kiD3Nlc3Npb25faWQ+rZz==--3f2a9c';
+
+  it('accepts the bare value copied from the cookie list', () => {
+    assert.deepEqual([...parseCookieString(` ${encoded} `)], [['rack.session', encoded]]);
+  });
+
+  it('re-encodes a value copied with "Show URL-decoded" turned on', () => {
+    assert.deepEqual([...parseCookieString(decoded)], [['rack.session', encoded]]);
+    assert.deepEqual([...parseCookieString(`rack.session=${decoded}`)], [['rack.session', encoded]]);
+  });
+
+  it('accepts name=value and a whole Cookie header from the Network tab', () => {
+    assert.deepEqual([...parseCookieString(`rack.session=${encoded}`)], [['rack.session', encoded]]);
+    assert.deepEqual(
+      [...parseCookieString(`Cookie: _ga=GA1.2.345; rack.session=${encoded}; unl_banner=1`)],
+      [['_ga', 'GA1.2.345'], ['rack.session', encoded], ['unl_banner', '1']],
+    );
+  });
+
+  it('keeps the first of two same-named cookies, as the server does', () => {
+    assert.equal(parseCookieString(`rack.session=${encoded}; rack.session=other`).get('rack.session'), encoded);
+  });
+});
+
 describe('DesignHubClient', () => {
   const cfg = {
     baseUrl: 'https://hub.test',
@@ -148,10 +175,11 @@ describe('DesignHubClient', () => {
 
   it('can use a pasted session cookie instead of a password', async () => {
     const up = createMockUpstream({ hub: { reservations, validSessions: new Set(['pasted']) } });
-    const client = new DesignHubClient({ ...cfg, username: '', password: '', cookie: 'rack.session=pasted' }, { zone: ZONE, fetch: up.fetch });
+    const client = new DesignHubClient({ ...cfg, username: '', password: '', cookie: 'Cookie: _ga=1; rack.session=pasted' }, { zone: ZONE, fetch: up.fetch });
     const result = await client.getReservations('2026-10-27');
     assert.equal(result.reservations.length, 2);
     assert.ok(up.calls.every((c) => c.method === 'GET'));
+    assert.equal(up.calls[0].headers.get('cookie'), '_ga=1; rack.session=pasted');
 
     up.hub.validSessions.clear();
     await assert.rejects(client.getReservations('2026-10-28'), { code: 'designhub_auth' });

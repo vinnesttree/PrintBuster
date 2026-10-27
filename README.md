@@ -77,11 +77,11 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | Setting | What it does |
 | --- | --- |
 | `DESIGNHUB_USERNAME`, `DESIGNHUB_PASSWORD` | A **local (non-SSO)** Studio Manager account that is an **admin** with the **See Agenda** permission. |
-| `DESIGNHUB_COOKIE` | For SSO-only accounts. Sign in with a browser, then paste its `rack.session=…` cookie here. The cookie expires after 30 days. |
+| `DESIGNHUB_COOKIE` | For accounts that can only sign in through UNL SSO. The session cookie from a signed-in browser. See [Finding the Design Hub session cookie](#finding-the-design-hub-session-cookie). |
 | `DESIGNHUB_BASE_URL` | Defaults to `https://designhub-manager.unl.edu`. |
 | `DESIGNHUB_WORKSHOP_CATEGORY` | Optional. Limits the agenda to one "Reservation Category" (the value from that dropdown). |
 | `BAMBU_EMAIL`, `BAMBU_PASSWORD` | The Bambu Lab account the printers are bound to. |
-| `BAMBU_ACCESS_TOKEN` | Optional. Use an existing token instead of email and password. |
+| `BAMBU_ACCESS_TOKEN` | Optional. Use a token instead of email and password. See [Finding a Bambu access token](#finding-a-bambu-access-token). |
 | `BAMBU_REGION` | `global` (default) or `china`. |
 | `PRINTER_MAP` | Needed only when a Bambu printer's name differs from its agenda "Model" name. Format: `Bambu name or serial=Model`, comma-separated. Example: `PRINTER_MAP=X1C-01=Ada,01S00C123456789=Archimedes`. |
 | `PRINTER_ORDER` | Row order, comma-separated. Defaults to the list in design-hub-waterfall. |
@@ -96,6 +96,47 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 Bambu often emails a verification code when an account signs in from a new place. When it does, PrintBuster shows a box at the top of the page. Type in the code from the email. Accounts with two-factor authentication get the same box for their authenticator code.
 
 The resulting token is saved to `data/bambu-token.json` (git-ignored, readable only by the file's owner). It lasts about 3 months, so restarts don't ask again.
+
+### Finding the Design Hub session cookie
+
+You only need this if your Design Hub account signs in through UNL SSO. PrintBuster can't complete the SSO login (and its two-factor check) by itself. Instead, it reuses the session of a browser where you are already signed in. Studio Manager keeps that session in a cookie named `rack.session`.
+
+1. On a computer, sign in to https://designhub-manager.unl.edu and open the admin **Agenda** page (`/admin/agenda/`). If the agenda loads, the session has the access PrintBuster needs.
+2. Open the developer tools: press **F12**, or **Ctrl+Shift+I** (**Cmd+Option+I** on a Mac).
+3. Find the site's cookies:
+   - **Chrome or Edge:** **Application** tab → **Storage** → **Cookies** → `https://designhub-manager.unl.edu`
+   - **Firefox:** **Storage** tab → **Cookies** → `https://designhub-manager.unl.edu`
+   - **Safari:** first turn on **Settings → Advanced → Show features for web developers**. Then use **Develop → Show Web Inspector** → **Storage** tab → **Cookies**.
+4. Click the row named **`rack.session`** and copy its **Value**. It is long, and usually contains `%3D` and `--`. The cookie is HttpOnly, so typing `document.cookie` in the console will not show it.
+5. Put it in `.env` inside single quotes, and leave `DESIGNHUB_USERNAME` and `DESIGNHUB_PASSWORD` empty:
+
+   ```sh
+   DESIGNHUB_COOKIE='rack.session=PASTE_THE_VALUE_HERE'
+   ```
+
+6. Restart PrintBuster: `npm start`, or `docker compose up -d` with Docker.
+
+If the cookie list is hard to find, or shows more than one `rack.session` (other UNL sites can set one too), use the **Network** tab instead. Reload the agenda page, click the first request (`agenda/`), find **Request Headers → Cookie**, and copy that whole value into `DESIGNHUB_COOKIE`. PrintBuster picks out `rack.session` itself. It also accepts the bare value without `rack.session=`, and a value copied with Chrome's "Show URL-decoded" option turned on.
+
+Things to know:
+
+- **Treat the cookie like a password.** It gives the same admin access as your login. Signing out in the browser does not cancel a copy, because Studio Manager stores the whole session inside the cookie rather than on its server.
+- **Copy a fresh one when it stops working.** Browsers keep the cookie for 30 days after its last use. While PrintBuster runs, it keeps the session refreshed, but after a restart it starts again from the value in `.env`. When the page says "The Design Hub session cookie is no longer valid", repeat the steps above.
+
+### Finding a Bambu access token
+
+You only need this if signing in with `BAMBU_EMAIL` and `BAMBU_PASSWORD` fails, for example when the page says Bambu's Cloudflare protection blocked the request. It also works if you'd rather not store the Bambu password.
+
+1. Sign in at https://makerworld.com with the Bambu account the printers are bound to.
+2. Open the developer tools (as above) and go to the cookies for `https://makerworld.com`.
+3. Copy the **Value** of the cookie named **`token`**.
+4. Put it in `.env` and restart:
+
+   ```sh
+   BAMBU_ACCESS_TOKEN='PASTE_THE_TOKEN_HERE'
+   ```
+
+Bambu's sign-in tokens usually last about 3 months. When the page says "Bambu rejected BAMBU_ACCESS_TOKEN", copy a new one. This token also gives full access to the Bambu account, so keep it private.
 
 ## How it works
 

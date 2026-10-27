@@ -84,14 +84,28 @@ export function parseAgendaHtml(html, { zone, requestedDate }) {
   return { date: pageDate, reservations, skipped };
 }
 
-function parseCookieString(raw) {
+const SESSION_COOKIE = 'rack.session';
+
+// DESIGNHUB_COOKIE accepts what people copy out of a browser: the
+// rack.session value alone, "rack.session=<value>", or a whole Cookie
+// request header (with or without the "Cookie:" prefix).
+export function parseCookieString(raw) {
+  const text = raw.trim().replace(/^cookie:\s*/i, '');
   const jar = new Map();
-  for (const part of raw.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx > 0) jar.set(part.slice(0, idx).trim(), part.slice(idx + 1).trim());
+  if (/(^|;\s*)rack\.session=/.test(text) || text.includes(';')) {
+    for (const part of text.split(';')) {
+      const idx = part.indexOf('=');
+      const name = part.slice(0, idx).trim();
+      // Like Rack, the first cookie with a given name wins.
+      if (idx > 0 && !jar.has(name)) jar.set(name, part.slice(idx + 1).trim());
+    }
+  } else if (text) {
+    jar.set(SESSION_COOKIE, text);
   }
-  // Allow pasting just the session value.
-  if (!jar.size && raw.trim()) jar.set('rack.session', raw.trim());
+  // Browser dev tools can show the value URL-decoded. The server URL-decodes
+  // cookies (turning "+" into a space), so send it encoded.
+  const value = jar.get(SESSION_COOKIE);
+  if (value && !/%[0-9A-Fa-f]{2}/.test(value)) jar.set(SESSION_COOKIE, encodeURIComponent(value));
   return jar;
 }
 
@@ -164,7 +178,7 @@ export class DesignHubClient {
     if (!this.canLogin) {
       throw new SourceError('The Design Hub session cookie is no longer valid.', {
         code: 'designhub_auth',
-        hint: 'Paste a fresh DESIGNHUB_COOKIE, or set DESIGNHUB_USERNAME and DESIGNHUB_PASSWORD.',
+        hint: 'Copy a fresh rack.session cookie into DESIGNHUB_COOKIE (README: "Finding the Design Hub session cookie"), or set DESIGNHUB_USERNAME and DESIGNHUB_PASSWORD.',
       });
     }
     this.jar.clear();
