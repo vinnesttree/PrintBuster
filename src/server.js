@@ -44,6 +44,9 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     next();
   });
 
+  // Liveness probe for container healthchecks; stays reachable behind APP_PASSWORD.
+  app.get('/healthz', (req, res) => res.json({ ok: true }));
+
   // Optional basic auth: the page shows member names from an admin view.
   if (config.appPassword) {
     const expected = Buffer.from(`${config.appUsername}:${config.appPassword}`);
@@ -109,14 +112,25 @@ async function main() {
   const app = await createApp(config);
   const server = app.listen(config.port, config.host, () => {
     const { port } = server.address();
-    const host = config.host === '0.0.0.0' ? 'localhost' : config.host;
-    console.log(`PrintBuster running at http://${host}:${port}/`);
+    // On 0.0.0.0 (as in Docker) the reachable address depends on port publishing.
+    console.log(config.host === '0.0.0.0'
+      ? `PrintBuster listening on all interfaces, port ${port}`
+      : `PrintBuster running at http://${config.host}:${port}/`);
     if (config.demo) console.log('Demo mode: showing generated sample data, not live data.');
     else {
       if (!config.designhub.configured) console.warn('Design Hub credentials are missing; that source will show an error.');
       if (!config.bambu.configured) console.warn('Bambu credentials are missing; that source will show an error.');
     }
   });
+
+  // As PID 1 in a container, Node gets no default SIGTERM handling, so
+  // `docker stop` would otherwise wait out its timeout and kill the process.
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {

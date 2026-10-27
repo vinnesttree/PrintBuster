@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import { loadConfig, parsePrinterMap } from '../src/config.js';
+import { loadConfig, loadEnvFile, parsePrinterMap } from '../src/config.js';
 import { createApp } from '../src/server.js';
 import { createMockUpstream, task } from './helpers/mock-upstream.js';
 
@@ -33,6 +33,29 @@ describe('config', () => {
     assert.equal(loadConfig({ BAMBU_EMAIL: 'a', BAMBU_PASSWORD: 'b' }, []).demo, false);
     assert.equal(loadConfig({ DEMO_MODE: 'false' }, []).demo, false);
     assert.equal(loadConfig({ BAMBU_ACCESS_TOKEN: 't' }, ['node', 'x', '--demo']).demo, true);
+  });
+
+  it('loads .env without overriding real environment variables', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-env-'));
+    assert.equal(loadEnvFile(path.join(dir, '.env')), false);
+
+    const file = path.join(dir, '.env');
+    await fs.writeFile(file, "PB_TEST_HOST=127.0.0.1\nPB_TEST_PW='p@ss$word#1'\n");
+    process.env.PB_TEST_HOST = '0.0.0.0';
+    try {
+      assert.equal(loadEnvFile(file), true);
+      assert.equal(process.env.PB_TEST_HOST, '0.0.0.0');
+      assert.equal(process.env.PB_TEST_PW, 'p@ss$word#1');
+    } finally {
+      delete process.env.PB_TEST_HOST;
+      delete process.env.PB_TEST_PW;
+    }
+  });
+
+  it('explains a .env folder left behind by a Docker mount', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-env-'));
+    await fs.mkdir(path.join(dir, '.env'));
+    assert.throws(() => loadEnvFile(path.join(dir, '.env')), /is a folder, not a file/);
   });
 
   it('rejects bad settings early', () => {
@@ -148,5 +171,9 @@ describe('live mode', () => {
     assert.equal((await api.get('/api/config', { Authorization: wrong })).status, 401);
     const right = `Basic ${Buffer.from('staff:p@ss').toString('base64')}`;
     assert.equal((await api.get('/api/config', { Authorization: right })).status, 200);
+    // The container healthcheck has no credentials.
+    const health = await api.get('/healthz');
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true });
   });
 });

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertTimezone } from './time.js';
@@ -14,13 +15,18 @@ export const DEFAULT_PRINTER_ORDER = [
 
 // Load .env from the project root if present. Real environment variables win.
 export function loadEnvFile(file = path.join(ROOT_DIR, '.env')) {
+  let stat;
   try {
-    process.loadEnvFile(file);
-    return true;
+    stat = fs.statSync(file);
   } catch (err) {
     if (err.code === 'ENOENT') return false;
     throw err;
   }
+  if (stat.isDirectory()) {
+    throw new Error(`${file} is a folder, not a file. Docker creates one when it mounts a .env that does not exist yet: delete that folder, create .env from .env.example, and start again.`);
+  }
+  process.loadEnvFile(file);
+  return true;
 }
 
 function str(env, key, fallback = '') {

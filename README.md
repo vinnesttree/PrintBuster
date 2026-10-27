@@ -35,6 +35,43 @@ npm start
 
 When neither source has credentials in `.env`, the app starts in demo mode. A banner and a "Demo data" badge say so.
 
+## Running in Docker
+
+You need Docker with the Compose plugin. Node.js isn't needed on the host.
+
+```sh
+cp .env.example .env   # fill in the logins, or skip this step for demo data
+docker compose up -d --build
+```
+
+Open http://127.0.0.1:3000.
+
+- **Logs:** `docker compose logs -f`
+- **Stop:** `docker compose down`
+- **Update after changing the code:** `docker compose up -d --build`
+
+The container starts again whenever Docker starts (for example after a reboot), unless you stopped it yourself.
+
+How the container uses `.env`:
+
+- **Publishing address.** `HOST` and `PORT` in `.env` choose where the page is published on the host. The default `127.0.0.1:3000` means only that computer can open it. To share it on the network, set `HOST=0.0.0.0` and also set `APP_PASSWORD`. Inside the container the app always listens on `0.0.0.0:3000`.
+- **Saved Bambu sign-in.** The token is kept in the `printbuster-data` volume, so restarts and rebuilds don't ask for a new email code. `docker compose down -v` deletes it.
+- **Health.** The container reports healthy or unhealthy in `docker ps`, using an unauthenticated `/healthz` endpoint that returns only `{"ok":true}`.
+- **Quoting.** Wrap passwords in single quotes in `.env`, e.g. `BAMBU_PASSWORD='p@ss$word#1'`. Compose treats an unquoted or double-quoted `$` as the start of a variable name, and `npm start` treats an unquoted `#` as the start of a comment. Single quotes keep the value exactly as typed in both.
+
+Without Compose:
+
+```sh
+docker build -t printbuster .
+docker run -d --name printbuster --restart unless-stopped \
+  -p 127.0.0.1:3000:3000 \
+  -v "$PWD/.env:/app/.env:ro" \
+  -v printbuster-data:/app/data \
+  printbuster
+```
+
+Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` keeps quote marks as part of the value, and its `HOST=127.0.0.1` would make the page unreachable from outside the container. Leave out the `.env` line to run with demo data. If `.env` doesn't exist when you mount it, Docker creates an empty folder with that name. The app then stops with a message telling you to delete the folder.
+
 ## Configuration (`.env`)
 
 | Setting | What it does |
@@ -50,7 +87,7 @@ When neither source has credentials in `.env`, the app starts in demo mode. A ba
 | `PRINTER_ORDER` | Row order, comma-separated. Defaults to the list in design-hub-waterfall. |
 | `MATCH_GRACE_MINUTES` | How many minutes a print may start before, or run past, a reservation and still count as reserved. Default 15. |
 | `TIMEZONE` | The time zone the agenda uses. Default `America/Chicago`. |
-| `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. |
+| `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. With Docker Compose, these choose where the container is published. |
 | `APP_USERNAME`, `APP_PASSWORD` | Optional basic-auth login for the PrintBuster page. Set these before sharing the page on the network, because it shows member names. |
 | `CACHE_SECONDS` | How long fetched data is reused before the sites are asked again. Default 60. |
 
@@ -123,4 +160,6 @@ src/compare.js     Printer mapping and reservation matching
 src/service.js     Fetches both sources in parallel, caches, builds the comparison
 src/demo.js        Demo data in the real upstream formats
 public/            The page (no build step)
+Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)
+compose.yaml       Docker Compose service with the data volume and healthcheck
 ```
