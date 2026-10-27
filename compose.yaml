@@ -1,0 +1,23 @@
+services:
+  printbuster:
+    build: .
+    image: printbuster
+    restart: unless-stopped
+    # Logins and settings come from .env. Without one, the app shows demo data.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed inside the container. HOST and PORT in .env instead choose where
+      # the page is published on this computer (see `ports`).
+      HOST: 0.0.0.0
+      PORT: "3000"
+      # Keep the saved Bambu sign-in on the volume so restarts don't ask again.
+      BAMBU_TOKEN_CACHE: data/bambu-token.json
+    ports:
+      - "${HOST:-127.0.0.1}:${PORT:-3000}:3000"
+    volumes:
+      - printbuster-data:/app/data
+
+volumes:
+  printbuster-data:

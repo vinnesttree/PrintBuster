@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PrintBuster</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='9' height='4' rx='1' fill='%232a78d6'/%3E%3Crect x='5' y='9' width='10' height='4' rx='1' fill='%23d03b3b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>PrintBuster</h1>
+      <p>Design Hub reservations vs. Bambu Cloud print jobs</p>
+    </div>
+    <div class="topbar-actions">
+      <span id="demo-badge" class="badge" hidden>Demo data</span>
+      <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Color theme">Theme: auto</button>
+    </div>
+  </header>
+
+  <main>
+    <form id="controls" class="controls" aria-label="Day and filters">
+      <div class="control-group">
+        <button id="prev-day" class="btn" type="button" aria-label="Previous day">&#8249;</button>
+        <label class="sr-only" for="date">Day</label>
+        <input id="date" name="date" type="date" required>
+        <button id="next-day" class="btn" type="button" aria-label="Next day">&#8250;</button>
+        <button id="today" class="btn" type="button">Today</button>
+        <button id="refresh" class="btn" type="button">Refresh</button>
+      </div>
+      <div class="control-group">
+        <label class="check"><input id="only-bambu" type="checkbox"> Bambu printers only</label>
+        <label class="check"><input id="show-idle" type="checkbox"> Show idle printers</label>
+        <label class="check"><input id="auto-refresh" type="checkbox" checked> Auto-refresh</label>
+      </div>
+      <p id="updated" class="muted updated" aria-live="polite"></p>
+    </form>
+
+    <div id="banners" aria-live="polite"></div>
+
+    <section id="tiles" class="tiles" aria-label="Summary"></section>
+
+    <section class="card" aria-labelledby="chart-title">
+      <div class="card-head">
+        <div>
+          <h2 id="chart-title">Waterfall</h2>
+          <p id="chart-sub" class="muted"></p>
+        </div>
+        <ul class="legend" aria-label="Legend">
+          <li><span class="key key-res"></span>Reservation (Design Hub)</li>
+          <li><span class="key key-res-empty"></span>Reserved, no print recorded</li>
+          <li><span class="key key-ok"></span>Print within reservation</li>
+          <li><span class="key key-partial"></span><span class="icon icon-partial" aria-hidden="true">!</span>Print outside its reservation</li>
+          <li><span class="key key-bad"></span><span class="icon icon-bad" aria-hidden="true">&#x2715;</span>Print with no reservation</li>
+          <li><span class="key key-est"></span>Still printing (estimated)</li>
+        </ul>
+      </div>
+      <div id="chart-scroll" class="chart-scroll">
+        <div id="chart" class="chart" role="group" aria-labelledby="chart-title chart-sub"></div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="flagged-title">
+      <div class="card-head">
+        <h2 id="flagged-title">Prints without a matching reservation</h2>
+      </div>
+      <div id="flagged" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <details>
+        <summary><h2>All prints and reservations (table view)</h2></summary>
+        <h3>Bambu Cloud prints</h3>
+        <div id="all-prints" class="table-wrap"></div>
+        <h3>Design Hub reservations</h3>
+        <div id="all-reservations" class="table-wrap"></div>
+      </details>
+    </section>
+  </main>
+
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+</body>
+</html>

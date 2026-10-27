@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Agenda | Engineering Design Hub</title></head>
+<body>
+<nav><a href="/admin/agenda/">Agenda</a></nav>
+<main>
+<form class="dcf-form dcf-float-right" id="find-controls">
+    <label for="date">Go to another date:</label>
+    <input id="date" name="date" title="Reservation Date" type="text" value="10/27/2026" />
+    <button id="search-btn" tabindex="1" class="dcf-btn dcf-btn-inverse-primary" style="margin-top:10px;">Search</button>
+</form>
+
+<h1 class="dcf-txt-h3">Today's Agenda <span class="dcf-subhead">October 27, 2026</h1>
+
+<h2 class="dcf-txt-h4">Today's Hours</h2>
+    Open: 8:00 am -  8:00 pm
+
+<h2 class="dcf-txt-h4" id="todays-reservations">Today's Reservations</h2>
+
+<table class="dcf-w-100% dcf-table dcf-table-bordered" aria-describedby="todays-reservations">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Tool</th>
+            <th>Model</th>
+            <th>Time</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>
+                    Jane Doe
+            </td>
+            <td>
+                Bambu Lab X1 Carbon
+            </td>
+            <td>
+                Ada
+            </td>
+            <td>
+                Oct 27  9:00 am
+                –
+                Oct 27 11:30 am
+                <br>
+                150 minutes
+            </td>
+            <td>
+                <form class="dcf-form delete-form" method="POST" action="/admin/agenda/reservations/4101/remove/">
+                <button class="dcf-btn dcf-btn-primary" type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                        <p class="dcf-rounded unl-cream unl-bg-scarlet dcf-p-3 dcf-w-fit-content">Sam Expired </p>
+            </td>
+            <td>
+                Bambu Lab P1S
+            </td>
+            <td>
+                Faraday
+            </td>
+            <td>
+                Oct 27 12:00 pm
+                –
+                Oct 27  1:15 pm
+                <br>
+                75 minutes
+            </td>
+            <td>
+                <form class="dcf-form delete-form" method="POST" action="/admin/agenda/reservations/4102/remove/">
+                <button class="dcf-btn dcf-btn-primary" type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <strong>Event:</strong> Intro to 3D Printing
+            </td>
+            <td>
+                Bambu Lab X1 Carbon
+            </td>
+            <td>
+                Archimedes
+            </td>
+            <td>
+                Oct 27  2:00 pm
+                –
+                Oct 27  4:00 pm
+                <br>
+                120 minutes
+            </td>
+            <td>
+                <form class="dcf-form delete-form" method="POST" action="/admin/agenda/reservations/4103/remove/">
+                <button class="dcf-btn dcf-btn-primary" type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                    Alex Night-Owl
+            </td>
+            <td>
+                Bambu Lab X1 Carbon
+            </td>
+            <td>
+                Ada
+            </td>
+            <td>
+                Oct 27 10:00 pm
+                –
+                Oct 28  2:00 am
+                <br>
+                240 minutes
+            </td>
+            <td>
+                <form class="dcf-form delete-form" method="POST" action="/admin/agenda/reservations/4104/remove/">
+                <button class="dcf-btn dcf-btn-primary" type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                    Broken Row
+            </td>
+            <td>
+                Laser Cutter
+            </td>
+            <td>
+                Hull
+            </td>
+            <td>
+                TBD
+            </td>
+            <td></td>
+        </tr>
+    </tbody>
+</table>
+
+<h2 class="dcf-txt-h4 dcf-mt-4" id="todays-events">Today's Events</h4>
+<table class="dcf-w-100% dcf-table dcf-table-bordered" aria-describedby="todays-events">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Date/Location</th>
+            <th>Type</th>
+            <th>Trainer(s)</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a title="Edit Event" href="/admin/events/9/edit/">Intro to 3D Printing</a></td>
+            <td>10/27/2026 @  2:00 pm<br>Kiewit Hall</td>
+            <td>Workshop</td>
+            <td>No trainers assigned</td>
+        </tr>
+    </tbody>
+</table>
+</main>
+</body>
+</html>
