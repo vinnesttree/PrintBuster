@@ -42,7 +42,8 @@ export function buildComparison({
   printerOrder = [],
   printerMap = new Map(),
   graceMinutes = 15,
-  bambuComplete = true,
+  // Spans of time ([startMs, endMs]) in which Bambu's print list was observed.
+  printCoverage = [[-Infinity, Infinity]],
 }) {
   const dayStart = ms(day.start);
   const dayEnd = ms(day.end);
@@ -148,10 +149,11 @@ export function buildComparison({
     for (const r of list) {
       if (!overlaps(ms(r.start), ms(r.end), dayStart, dayEnd)) continue;
       row.reservationCount++;
-      // Only meaningful where the printer reports to Bambu cloud and the
-      // reservation has already started.
-      const noPrint = bambuAvailable && bambuComplete && row.devices.length > 0
-        && ms(r.start) < now && !printedReservations.has(r.id);
+      // Only meaningful where the printer reports to Bambu cloud, the
+      // reservation has started, and Bambu was observed for all of it so far.
+      const noPrint = bambuAvailable && row.devices.length > 0
+        && ms(r.start) < now && !printedReservations.has(r.id)
+        && uncoveredSegments(ms(r.start), Math.min(ms(r.end), now), printCoverage).length === 0;
       outReservations.push({ ...r, rowKey, noPrint });
     }
   }

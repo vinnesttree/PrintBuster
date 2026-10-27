@@ -7,6 +7,7 @@ import { loadConfig, loadEnvFile, ROOT_DIR } from './config.js';
 import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
 import { describeError, SourceError } from './errors.js';
+import { PrintLog } from './printlog.js';
 import { CompareService } from './service.js';
 import { isIsoDate, todayIn } from './time.js';
 
@@ -18,6 +19,7 @@ function notConfigured(code, message, hint) {
 export async function createApp(config, { fetch = globalThis.fetch, now = () => Date.now() } = {}) {
   let designhub;
   let bambu;
+  let printLog = null;
   if (config.demo) {
     designhub = new DemoDesignHub({ zone: config.timezone, now });
     bambu = new DemoBambu({ zone: config.timezone, now });
@@ -28,12 +30,15 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
         'Set DESIGNHUB_USERNAME and DESIGNHUB_PASSWORD (or DESIGNHUB_COOKIE) in .env.');
     bambu = new BambuClient(config.bambu, { fetch, now });
     await bambu.init();
+    printLog = new PrintLog(config.printLogPath);
+    await printLog.load();
   }
-  const service = new CompareService(config, { designhub, bambu, now });
+  const service = new CompareService(config, { designhub, bambu, printLog, now });
   const bambuStatus = () => (bambu.status ? bambu.status() : { configured: false });
 
   const app = express();
   app.disable('x-powered-by');
+  app.locals.service = service;
 
   app.use((req, res, next) => {
     res.set({
@@ -122,11 +127,17 @@ async function main() {
       if (!config.bambu.configured) console.warn('Bambu credentials are missing; that source will show an error.');
     }
   });
+  if (!config.demo && config.bambu.configured) app.locals.service.startPolling(config.bambu.pollMinutes);
 
   // As PID 1 in a container, Node gets no default SIGTERM handling, so
   // `docker stop` would otherwise wait out its timeout and kill the process.
   const shutdown = () => {
-    server.close(() => process.exit(0));
+    app.locals.service.stopPolling();
+    // Let any print log write in flight finish before exiting.
+    server.close(async () => {
+      await app.locals.service.printLog?.queue;
+      process.exit(0);
+    });
     setTimeout(() => process.exit(0), 5000).unref();
   };
   process.once('SIGTERM', shutdown);

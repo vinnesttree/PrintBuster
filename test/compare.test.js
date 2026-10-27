@@ -129,7 +129,14 @@ describe('buildComparison', () => {
   it('does not claim missing prints when Bambu data is unavailable or incomplete', () => {
     const r = [res('past', 'Ada', '2026-10-27T09:00', '2026-10-27T10:00')];
     assert.equal(compare(r, null, { devices: null }).reservations[0].noPrint, false);
-    assert.equal(compare(r, [], { bambuComplete: false }).reservations[0].noPrint, false);
+    assert.equal(compare(r, [], { printCoverage: [] }).reservations[0].noPrint, false);
+  });
+
+  it('only claims a missing print where Bambu was observed for the whole reservation', () => {
+    const r = [res('am', 'Ada', '2026-10-27T09:00', '2026-10-27T10:00'), res('pm', 'Ada', '2026-10-27T13:00', '2026-10-27T14:00')];
+    // Observed from 9:30 onwards: the 9:00 reservation is only partly covered.
+    const flags = compare(r, [], { printCoverage: [[Date.parse(t('2026-10-27T09:30')), NOW]] }).reservations.map((x) => [x.id, x.noPrint]);
+    assert.deepEqual(flags, [['am', false], ['pm', true]]);
   });
 
   it('marks prints as not compared when the agenda is unavailable', () => {

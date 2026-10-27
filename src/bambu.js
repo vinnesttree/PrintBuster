@@ -43,7 +43,9 @@ export function mapTaskStatus(raw) {
 
 const MIN_PRINT_MS = 60_000;
 
-export function normalizeTask(task, deviceNames, nowMs) {
+// `confirmed` is false for a saved task that the latest Bambu response did
+// not include: if it was printing when last seen, its finish is unknown.
+export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {}) {
   const start = Date.parse(task.startTime);
   if (!Number.isFinite(start)) return null;
   let end = Date.parse(task.endTime);
@@ -53,11 +55,18 @@ export function normalizeTask(task, deviceNames, nowMs) {
   // While a job is printing the cloud reports an endTime equal to (or within a
   // minute of) its startTime; the slicer estimate gives the expected finish.
   let estimated = false;
+  let finishUnknown = false;
   const open = !Number.isFinite(end) || end - start <= MIN_PRINT_MS;
   if (open && status !== 'finished' && status !== 'failed') {
-    status = 'running';
     estimated = true;
-    end = estimateMs ? start + estimateMs : Math.max(nowMs, start + MIN_PRINT_MS);
+    if (confirmed) {
+      status = 'running';
+      end = estimateMs ? start + estimateMs : Math.max(nowMs, start + MIN_PRINT_MS);
+    } else {
+      status = 'unknown';
+      finishUnknown = true;
+      end = start + (estimateMs || MIN_PRINT_MS);
+    }
   }
   // Prints cancelled within a minute still need a non-empty interval.
   end = Math.max(end, start + MIN_PRINT_MS);
@@ -74,7 +83,8 @@ export function normalizeTask(task, deviceNames, nowMs) {
     status,
     rawStatus: task.status ?? null,
     estimated,
-    overdue: estimated && end < nowMs,
+    finishUnknown,
+    overdue: status === 'running' && end < nowMs,
     estimateMinutes: estimateMs ? Math.round(estimateMs / 60000) : null,
     weightGrams: Number(task.weight) > 0 ? Math.round(Number(task.weight) * 10) / 10 : null,
   };
