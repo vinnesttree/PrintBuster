@@ -96,6 +96,7 @@ describe('live mode', () => {
     BAMBU_EMAIL: 'shop@example.com',
     BAMBU_PASSWORD: 'pw',
     BAMBU_TOKEN_CACHE: path.join(dir, 'token.json'),
+    PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
     CACHE_SECONDS: '60',
   });
   const NOW = Date.parse('2026-10-27T23:00:00Z');
@@ -175,5 +176,104 @@ describe('live mode', () => {
     const health = await api.get('/healthz');
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
+  });
+});
+
+describe('print log', () => {
+  const at = (iso) => Date.parse(iso);
+
+  async function setup() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-printlog-'));
+    const up = createMockUpstream({
+      hub: {
+        reservations: [
+          { name: 'Jane Doe', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T11:00' },
+          { name: 'No Show', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-20T09:00', end: '2026-10-20T11:00' },
+        ],
+      },
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }],
+        tasks: [
+          task(1, 'D-ADA', '2026-10-26T09:10', '2026-10-26T10:40'),
+          task(2, 'D-ADA', '2026-10-26T13:00', '2026-10-26T14:30'),
+          // Still printing at the first fetch (the cloud reports end == start).
+          task(3, 'D-ADA', '2026-10-26T21:00', null, { status: 1, costTime: 7200 }),
+        ],
+      },
+    });
+    const env = {
+      DEMO_MODE: 'false',
+      DESIGNHUB_BASE_URL: 'https://hub.test',
+      DESIGNHUB_USERNAME: 'kiosk',
+      DESIGNHUB_PASSWORD: 'secret',
+      BAMBU_ACCESS_TOKEN: 'env-token',
+      PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
+      CACHE_SECONDS: '0',
+    };
+    return { dir, up, env };
+  }
+
+  it('keeps prints after Bambu has forgotten them, across restarts', async () => {
+    const { up, env } = await setup();
+    let clock = at('2026-10-26T21:30:00-05:00');
+    const first = await createApp(loadConfig(env, []), { fetch: up.fetch, now: () => clock });
+    await first.locals.service.pollBambu();
+
+    // Two days later Bambu only returns recent work.
+    clock = at('2026-10-28T12:00:00-05:00');
+    up.bambu.tasks = [task(9, 'D-ADA', '2026-10-28T08:00', '2026-10-28T09:00')];
+
+    const api = await start(env, { fetch: up.fetch, now: () => clock }); // a fresh process
+    const data = await (await api.get('/api/compare?date=2026-10-26')).json();
+    assert.equal(data.sources.bambu.ok, true);
+    assert.deepEqual(
+      data.prints.map((p) => [p.id, p.match, p.status]),
+      [['bb-1', 'reserved', 'finished'], ['bb-2', 'unreserved', 'finished'], ['bb-3', 'unreserved', 'unknown']],
+    );
+    const stale = data.prints.find((p) => p.id === 'bb-3');
+    assert.equal(stale.finishUnknown, true, 'was printing when last seen; its finish was never observed');
+    assert.equal(data.printsAvailable, true);
+    assert.equal(data.sources.bambu.log.prints, 4);
+    // Observed from the oldest logged print (9:10) onward on Oct 26, nothing
+    // between the 21:30 poll and the restart.
+    assert.deepEqual(data.printGaps, [
+      { start: '2026-10-26T05:00:00.000Z', end: '2026-10-26T14:10:00.000Z' },
+      { start: '2026-10-27T02:30:00.000Z', end: '2026-10-27T05:00:00.000Z' },
+    ]);
+  });
+
+  it('counts a fresh fetch as observing the present, so today has no trailing gap', async () => {
+    const { up, env } = await setup();
+    let clock = at('2026-10-26T21:30:00-05:00');
+    const api = await start(env, { fetch: up.fetch, now: () => (clock += 1000) }); // time passes on every read
+    const data = await (await api.get('/api/compare?date=2026-10-26')).json();
+    assert.deepEqual(data.printGaps, [{ start: '2026-10-26T05:00:00.000Z', end: '2026-10-26T14:10:00.000Z' }]);
+  });
+
+  it('marks days before logging began as unknown instead of empty', async () => {
+    const { up, env } = await setup();
+    const clock = at('2026-10-26T21:30:00-05:00');
+    const api = await start(env, { fetch: up.fetch, now: () => clock });
+    const data = await (await api.get('/api/compare?date=2026-10-20')).json();
+    assert.equal(data.printsAvailable, false);
+    assert.deepEqual(data.printGaps, [{ start: '2026-10-20T05:00:00.000Z', end: '2026-10-21T05:00:00.000Z' }]);
+    assert.equal(data.reservations.length, 1);
+    assert.equal(data.reservations[0].noPrint, false, 'no Bambu data, so no claim that nothing printed');
+  });
+
+  it('shows logged prints when Bambu is unreachable', async () => {
+    const { up, env } = await setup();
+    let clock = at('2026-10-26T21:30:00-05:00');
+    const first = await createApp(loadConfig(env, []), { fetch: up.fetch, now: () => clock });
+    await first.locals.service.pollBambu();
+
+    clock = at('2026-10-26T22:00:00-05:00');
+    up.bambu.validTokens.clear(); // Bambu now rejects the token
+    const api = await start(env, { fetch: up.fetch, now: () => clock });
+    const data = await (await api.get('/api/compare?date=2026-10-26')).json();
+    assert.equal(data.sources.bambu.ok, false);
+    assert.equal(data.printsAvailable, true);
+    assert.deepEqual(data.prints.map((p) => p.id), ['bb-1', 'bb-2', 'bb-3']);
+    assert.equal(data.prints[2].status, 'unknown', 'cannot confirm it is still printing');
   });
 });

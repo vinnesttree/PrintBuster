@@ -55,7 +55,8 @@ The container starts again whenever Docker starts (for example after a reboot), 
 How the container uses `.env`:
 
 - **Publishing address.** `HOST` and `PORT` in `.env` choose where the page is published on the host. The default `127.0.0.1:3000` means only that computer can open it. To share it on the network, set `HOST=0.0.0.0` and also set `APP_PASSWORD`. Inside the container the app always listens on `0.0.0.0:3000`.
-- **Saved Bambu sign-in.** The token is kept in the `printbuster-data` volume, so restarts and rebuilds don't ask for a new email code. `docker compose down -v` deletes it.
+- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log). `docker compose down -v` deletes the volume and everything in it.
+- **Copying the print log out.** `docker compose cp printbuster:/app/data/print-log.jsonl .`
 - **Health.** The container reports healthy or unhealthy in `docker ps`, using an unauthenticated `/healthz` endpoint that returns only `{"ok":true}`.
 - **Quoting.** Wrap passwords in single quotes in `.env`, e.g. `BAMBU_PASSWORD='p@ss$word#1'`. Compose treats an unquoted or double-quoted `$` as the start of a variable name, and `npm start` treats an unquoted `#` as the start of a comment. Single quotes keep the value exactly as typed in both.
 
@@ -90,12 +91,28 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. With Docker Compose, these choose where the container is published. |
 | `APP_USERNAME`, `APP_PASSWORD` | Optional basic-auth login for the PrintBuster page. Set these before sharing the page on the network, because it shows member names. |
 | `CACHE_SECONDS` | How long fetched data is reused before the sites are asked again. Default 60. |
+| `BAMBU_POLL_MINUTES` | How often Bambu is checked in the background to fill the [print log](#print-log), even when nobody has the page open. Default 15. `0` turns background checks off. |
+| `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
 
 ### Bambu sign-in codes
 
 Bambu often emails a verification code when an account signs in from a new place. When it does, PrintBuster shows a box at the top of the page. Type in the code from the email. Accounts with two-factor authentication get the same box for their authenticator code.
 
 The resulting token is saved to `data/bambu-token.json` (git-ignored, readable only by the file's owner). It lasts about 3 months, so restarts don't ask again.
+
+### Print log
+
+Bambu's cloud only keeps about a day of print history, so PrintBuster saves every print it sees to `data/print-log.jsonl`. It checks Bambu every `BAMBU_POLL_MINUTES` (default 15) whether or not anyone has the page open. That lets you go back to any day since the log started and still compare it against the agenda.
+
+- **What's in it.** One line of JSON per print, written when PrintBuster first sees the print and again whenever it changes (for example when it finishes). The last line for an `id` is the current one. Each line has the print's start and end times (UTC), the Bambu status, the printer, the job title and when it was recorded:
+
+  ```json
+  {"id":"123456","startTime":"2026-10-27T14:10:00Z","endTime":"2026-10-27T15:40:00Z","status":2,"deviceId":"01P00A350100003","deviceName":"Faraday","title":"Bracket batch","costTime":5400,"recordedAt":"2026-10-27T15:45:02.000Z"}
+  ```
+
+- **Gaps.** Next to it, `print-log.coverage.json` lists the time spans PrintBuster actually observed. If PrintBuster was off for longer than Bambu keeps history, some prints are never seen. The page then says which hours of the day have no data. It also won't mark reservations in those hours as "no print recorded", and before the log started it shows "—" instead of zero counts.
+- **Unknown finishes.** If a print was still running the last time PrintBuster saw it, and Bambu forgot it before it finished, it shows as "Finish not recorded" and is drawn to its estimated end.
+- **Size.** About one or two lines per print, so a busy year is a few megabytes.
 
 ### Finding the Design Hub session cookie
 
@@ -158,6 +175,8 @@ Bambu has no official public API. This uses the endpoints that Bambu's own apps 
 - `GET /v1/iot-service/api/user/bind` for the printers on the account
 - `GET /v1/user-service/my/tasks` for print history, newest first, paged back to 48 hours before the selected day
 
+Every successful fetch is also saved to the [print log](#print-log), and the page draws prints from that log.
+
 Task status `2` means finished and `3` means failed or cancelled. While a job is printing, the cloud reports its end time as equal to its start time. In that case the slicer's time estimate gives the expected finish, and the chart shows that part faded.
 
 ### Matching rules
@@ -198,7 +217,8 @@ src/server.js      Express app and API (/api/compare, /api/config, /api/bambu/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
-src/service.js     Fetches both sources in parallel, caches, builds the comparison
+src/service.js     Fetches both sources in parallel, caches, polls Bambu, builds the comparison
+src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its coverage
 src/demo.js        Demo data in the real upstream formats
 public/            The page (no build step)
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)

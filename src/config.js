@@ -95,6 +95,8 @@ export function loadConfig(env = process.env, argv = process.argv) {
     tokenCachePath: path.resolve(ROOT_DIR, str(env, 'BAMBU_TOKEN_CACHE', 'data/bambu-token.json')),
     taskPageSize: int(env, 'BAMBU_TASK_PAGE_SIZE', 50, { min: 1 }),
     maxTaskPages: int(env, 'BAMBU_MAX_TASK_PAGES', 10, { min: 1 }),
+    // Bambu keeps about a day of history; poll so the print log has no gaps.
+    pollMinutes: int(env, 'BAMBU_POLL_MINUTES', 15, { min: 0 }),
   };
   bambu.configured = Boolean((bambu.email && bambu.password) || bambu.accessToken);
 
@@ -115,6 +117,7 @@ export function loadConfig(env = process.env, argv = process.argv) {
     appPassword: env.APP_PASSWORD ?? '',
     cacheSeconds: int(env, 'CACHE_SECONDS', 60, { min: 0 }),
     graceMinutes: int(env, 'MATCH_GRACE_MINUTES', 15, { min: 0 }),
+    printLogPath: path.resolve(ROOT_DIR, str(env, 'PRINT_LOG_PATH', 'data/print-log.jsonl')),
     printerOrder: list(env, 'PRINTER_ORDER', DEFAULT_PRINTER_ORDER),
     printerMap: parsePrinterMap(str(env, 'PRINTER_MAP')),
     designhub,

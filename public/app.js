@@ -69,6 +69,7 @@ function statusChip(match) {
 }
 
 function bambuStatusText(p) {
+  if (p.finishUnknown) return 'Finish not recorded (was printing when last checked)';
   if (p.status === 'running') {
     const when = fmtWhen(ms(p.end));
     return p.overdue ? `Printing (was due ${when})` : `Printing, due ${when}`;
@@ -363,8 +364,8 @@ function groupBy(list, key) {
 // ---------------------------------------------------------------- tiles, banners, tables
 
 function renderTiles() {
-  const { summary: s, sources, graceMinutes } = state.data;
-  const both = sources.designhub.ok && sources.bambu.ok;
+  const { summary: s, sources, graceMinutes, printsAvailable } = state.data;
+  const both = sources.designhub.ok && printsAvailable;
   const val = (v, ok) => (ok ? String(v) : '—');
   const tile = (iconCls, icon, label, value, note, alert) => el('div', { className: `tile${alert ? ' is-alert' : ''}` },
     el('div', { className: 'tile-label' }, el('span', { className: `icon ${iconCls}`, 'aria-hidden': 'true', text: icon }), label),
@@ -373,9 +374,9 @@ function renderTiles() {
   $('#tiles').replaceChildren(
     tile('icon-bad', '✕', 'Prints with no reservation', val(s.unreserved, both), 'Bambu jobs on a printer nobody had reserved', both && s.unreserved > 0),
     tile('icon-partial', '!', 'Prints outside their reservation', val(s.partial, both), `Started early or ran late by more than ${graceMinutes} min`),
-    tile('icon-ok', '✓', 'Prints within a reservation', val(s.reserved, both), `of ${val(s.prints, sources.bambu.ok)} Bambu prints this day`),
+    tile('icon-ok', '✓', 'Prints within a reservation', val(s.reserved, both), `of ${val(s.prints, printsAvailable)} Bambu prints this day`),
     tile('icon-info', 'i', 'Reservations', val(s.reservations, sources.designhub.ok),
-      sources.bambu.ok ? `${s.reservationsWithoutPrint} on Bambu printers with no print recorded` : 'Design Hub agenda'),
+      printsAvailable ? `${s.reservationsWithoutPrint} on Bambu printers with no print recorded` : 'Design Hub agenda'),
   );
 }
 
@@ -422,7 +423,7 @@ function bambuCodeForm(kind, message) {
 }
 
 function renderBanners() {
-  const { sources, demo, rows } = state.data;
+  const { sources, demo, rows, printsAvailable, printGaps } = state.data;
   const list = [];
   if (demo) {
     list.push(banner('icon-info', 'i', 'Showing demo data',
@@ -438,7 +439,12 @@ function renderBanners() {
       continue;
     }
     list.push(banner('icon-bad', '✕', `${names[key]} data unavailable`,
-      [src.error.message, src.error.hint].filter(Boolean).join(' ')));
+      [src.error.message, src.error.hint, key === 'bambu' && printsAvailable && 'Showing prints saved in the print log.']
+        .filter(Boolean).join(' ')));
+  }
+  if (!demo && printGaps.length) list.push(gapBanner(printGaps, sources.bambu.log, printsAvailable));
+  if (sources.bambu.log?.writeError) {
+    list.push(banner('icon-bad', '✕', 'Could not save the print log', `${sources.bambu.log.writeError}. New prints are kept in memory and saved once this is fixed, but are lost if PrintBuster restarts first. Check that the data folder (or Docker volume) is writable.`));
   }
   if (sources.bambu.ok && !sources.bambu.complete) {
     list.push(banner('icon-partial', '!', 'Bambu print history may be incomplete',
@@ -456,6 +462,19 @@ function renderBanners() {
   $('#banners').replaceChildren(...list);
 }
 
+// Bambu keeps about a day of history; explain spans nobody observed.
+function gapBanner(gaps, log, printsAvailable) {
+  const fmtGap = (g) => `${fmtWhen(ms(g.start))} – ${fmtWhen(ms(g.end))}`;
+  const since = log?.since ? `PrintBuster's print log starts ${fmtDayShort(ms(log.since))}, ${fmtClock(ms(log.since))}.` : 'Nothing has been saved to the print log yet.';
+  const intro = `Bambu only keeps about a day of print history, so PrintBuster saves every print it sees. ${since}`;
+  if (!printsAvailable) {
+    return banner('icon-partial', '!', 'No Bambu print data for this day',
+      `${intro} Nothing was observed on this day, so its prints can't be checked.`);
+  }
+  return banner('icon-partial', '!', 'Part of this day has no Bambu print data',
+    `${intro} Not observed: ${gaps.map(fmtGap).join('; ')}. Prints from that time can't be checked, and reservations in it aren't marked "no print recorded".`);
+}
+
 function table(headers, rows, emptyNode) {
   if (!rows.length) return emptyNode;
   return el('table', {},
@@ -469,8 +488,10 @@ function renderTables() {
   const flagged = prints.filter((p) => p.match === 'unreserved' || p.match === 'partial');
 
   let empty;
-  if (!sources.designhub.ok || !sources.bambu.ok) {
-    empty = el('p', { className: 'empty', text: 'Both sources are needed to compare. See the messages above.' });
+  if (!sources.designhub.ok) {
+    empty = el('p', { className: 'empty', text: 'The Design Hub agenda is needed to compare. See the messages above.' });
+  } else if (!state.data.printsAvailable) {
+    empty = el('p', { className: 'empty', text: 'There is no Bambu print data for this day to compare. See the message above.' });
   } else {
     empty = el('p', { className: 'empty' }, el('span', { className: 'icon icon-ok', 'aria-hidden': 'true', text: '✓' }),
       `Every Bambu print on ${fmtDayLong(state.data.day.date)} lines up with a Design Hub reservation.`);
@@ -501,7 +522,7 @@ function renderTables() {
       fmtDuration(ms(p.end) - ms(p.start)),
       bambuStatusText(p),
     ]),
-    el('p', { className: 'empty', text: sources.bambu.ok ? 'No Bambu prints on this day.' : 'Bambu data unavailable.' }),
+    el('p', { className: 'empty', text: state.data.printsAvailable ? 'No Bambu prints on this day.' : 'No Bambu print data for this day.' }),
   ));
 
   $('#all-reservations').replaceChildren(table(

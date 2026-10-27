@@ -45,6 +45,19 @@ describe('normalizeTask', () => {
     assert.equal(p.end, '2026-10-27T21:00:00.000Z');
   });
 
+  it('does not claim a saved job is still printing once Bambu stops reporting it', () => {
+    const raw = task(8, 'DEV1', '2026-10-27T14:00', null, { status: 1, costTime: 7200 });
+    const p = normalizeTask(raw, names, NOW, { confirmed: false });
+    assert.equal(p.status, 'unknown');
+    assert.equal(p.finishUnknown, true);
+    assert.equal(p.overdue, false);
+    assert.equal(p.end, '2026-10-27T21:00:00.000Z'); // drawn to its estimated finish
+    // A finished job is the same either way.
+    const done = normalizeTask(task(9, 'DEV1', '2026-10-27T09:00', '2026-10-27T10:00'), names, NOW, { confirmed: false });
+    assert.equal(done.status, 'finished');
+    assert.equal(done.finishUnknown, false);
+  });
+
   it('marks running jobs past their estimate as overdue', () => {
     const p = normalizeTask(task(9, 'DEV1', '2026-10-27T10:00', null, { status: 1, costTime: 3600 }), names, NOW);
     assert.equal(p.overdue, true);
