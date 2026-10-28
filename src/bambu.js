@@ -71,6 +71,9 @@ export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {
   // Prints cancelled within a minute still need a non-empty interval.
   end = Math.max(end, start + MIN_PRINT_MS);
 
+  const filaments = parseFilaments(task.amsDetailMapping);
+  const lengthMm = Number(task.length) > 0 ? Number(task.length) : 0;
+
   return {
     id: `bb-${task.id}`,
     title: task.title || task.designTitle || 'Untitled print',
@@ -86,8 +89,32 @@ export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {
     finishUnknown,
     overdue: status === 'running' && end < nowMs,
     estimateMinutes: estimateMs ? Math.round(estimateMs / 60000) : null,
-    weightGrams: Number(task.weight) > 0 ? Math.round(Number(task.weight) * 10) / 10 : null,
+    // All three are slice estimates from Bambu, not measured usage: an aborted
+    // print keeps the full estimate.
+    weightGrams: Number(task.weight) > 0 ? round1(Number(task.weight)) : null,
+    lengthMeters: lengthMm ? round1(lengthMm / 1000) : null,
+    filaments,
   };
+}
+
+const round1 = (n) => Math.round(n * 10) / 10;
+
+// Normalise a 6- or 8-digit RRGGBB(AA) hex to #RRGGBB, or null.
+function normalizeColor(c) {
+  const hex = String(c || '').replace(/^#/, '');
+  return /^[0-9a-fA-F]{6,8}$/.test(hex) ? `#${hex.slice(0, 6).toUpperCase()}` : null;
+}
+
+// amsDetailMapping lists one entry per filament used, each with its own weight.
+export function parseFilaments(amsDetailMapping) {
+  if (!Array.isArray(amsDetailMapping)) return [];
+  return amsDetailMapping
+    .map((f) => ({
+      type: (f.filamentType || f.targetFilamentType || '').toString().trim() || null,
+      grams: Number(f.weight) > 0 ? round1(Number(f.weight)) : null,
+      color: normalizeColor(f.sourceColor || f.targetColor),
+    }))
+    .filter((f) => f.type || f.grams);
 }
 
 function messageFrom(json, text) {

@@ -8,7 +8,7 @@ import path from 'node:path';
 // actually observed, so gaps (app offline, history already gone) are known.
 
 // The task fields needed to redraw and re-check a print later.
-const FIELDS = ['startTime', 'endTime', 'status', 'deviceId', 'deviceName', 'deviceModel', 'title', 'designTitle', 'plateName', 'plateIndex', 'costTime', 'weight'];
+const FIELDS = ['startTime', 'endTime', 'status', 'deviceId', 'deviceName', 'deviceModel', 'title', 'designTitle', 'plateName', 'plateIndex', 'costTime', 'weight', 'length', 'amsDetailMapping'];
 
 // Two successful fetches this close together are assumed to have seen
 // everything in between. Must stay well below Bambu's history window.

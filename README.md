@@ -87,6 +87,8 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `PRINTER_MAP` | Needed only when a Bambu printer's name differs from its agenda "Model" name. Format: `Bambu name or serial=Model`, comma-separated. Example: `PRINTER_MAP=X1C-01=Ada,01S00C123456789=Archimedes`. |
 | `PRINTER_ORDER` | Row order, comma-separated. Defaults to the list in design-hub-waterfall. |
 | `MATCH_GRACE_MINUTES` | How many minutes a print may start before, or run past, a reservation and still count as reserved. Default 15. |
+| `FLAG_WEIGHT_GRAMS` | Flag a print that uses more than this much filament. Default 200. `0` turns it off. |
+| `FLAG_DURATION_HOURS` | Flag a print that runs longer than this. Default 12. `0` turns it off. |
 | `TIMEZONE` | The time zone the agenda uses. Default `America/Chicago`. |
 | `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. With Docker Compose, these choose where the container is published. |
 | `APP_USERNAME`, `APP_PASSWORD` | Optional basic-auth login for the PrintBuster page. Set these before sharing the page on the network, because it shows member names. |
@@ -178,6 +180,8 @@ Bambu has no official public API. This uses the endpoints that Bambu's own apps 
 Every successful fetch is also saved to the [print log](#print-log), and the page draws prints from that log.
 
 Task status `2` means finished and `3` means failed or cancelled. While a job is printing, the cloud reports its end time as equal to its start time. In that case the slicer's time estimate gives the expected finish, and the chart shows that part faded.
+
+**Material usage.** Each print carries its filament weight, length, and a per-filament breakdown (type and color), shown in the hover tooltip and the table view. These are the slicer's estimates, not measured usage, so an aborted or failed print still shows its full estimate. Prints over `FLAG_WEIGHT_GRAMS` (default 200 g) or `FLAG_DURATION_HOURS` (default 12 h) are flagged, with a badge on the chart and a warning in the tooltip and table.
 
 ### Matching rules
 

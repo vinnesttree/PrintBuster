@@ -135,6 +135,8 @@ export class CompareService {
       printerOrder: this.config.printerOrder,
       printerMap: this.config.printerMap,
       graceMinutes: this.config.graceMinutes,
+      flagWeightGrams: this.config.flagWeightGrams,
+      flagDurationHours: this.config.flagDurationHours,
       printCoverage: coverage,
     });
 

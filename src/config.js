@@ -50,6 +50,18 @@ function int(env, key, fallback, { min = -Infinity } = {}) {
   return n;
 }
 
+// A non-negative number (allows decimals, e.g. hours). 0 is allowed and means
+// "disabled" for the threshold settings.
+function num(env, key, fallback, { min = -Infinity } = {}) {
+  const v = str(env, key);
+  if (v === '') return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < min) {
+    throw new Error(`${key} must be a number${min > -Infinity ? ` >= ${min}` : ''} (got "${v}")`);
+  }
+  return n;
+}
+
 function list(env, key, fallback) {
   const v = str(env, key);
   if (v === '') return fallback;
@@ -117,6 +129,9 @@ export function loadConfig(env = process.env, argv = process.argv) {
     appPassword: env.APP_PASSWORD ?? '',
     cacheSeconds: int(env, 'CACHE_SECONDS', 60, { min: 0 }),
     graceMinutes: int(env, 'MATCH_GRACE_MINUTES', 15, { min: 0 }),
+    // Flag a print as large above these. 0 turns a flag off.
+    flagWeightGrams: num(env, 'FLAG_WEIGHT_GRAMS', 200, { min: 0 }),
+    flagDurationHours: num(env, 'FLAG_DURATION_HOURS', 12, { min: 0 }),
     printLogPath: path.resolve(ROOT_DIR, str(env, 'PRINT_LOG_PATH', 'data/print-log.jsonl')),
     printerOrder: list(env, 'PRINTER_ORDER', DEFAULT_PRINTER_ORDER),
     printerMap: parsePrinterMap(str(env, 'PRINTER_MAP')),
