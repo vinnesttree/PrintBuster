@@ -51,6 +51,8 @@ function rng(seedText) {
 
 // Reservations and print jobs for one local day. Anomalies are fixed so every
 // past day shows each case the app detects.
+const round1 = (n) => Math.round(n * 10) / 10;
+
 function daySchedule(date, zone) {
   const rand = rng(`printbuster-${date}`);
   const pick = (arr) => arr[Math.floor(rand() * arr.length)];
@@ -94,6 +96,12 @@ function daySchedule(date, zone) {
   prints.push({ dev: dev.Clarke, title: 'Overnight lattice', start: at(22, 15), end: at(22, 15).plus({ hours: 6, minutes: 20 }) });
   // A long, heavy print that trips both the weight and duration flags.
   prints.push({ dev: dev.Johnson, title: 'Full-bed marathon', start: at(18, 0), end: at(18, 0).plus({ hours: 14, minutes: 30 }) });
+  // A two-colour PLA print (multi-colour, one material).
+  prints.push({ dev: dev.Ada, title: 'Two-tone nameplate', start: at(13, 0), end: at(14, 30),
+    filaments: [{ type: 'PLA', color: 'E8603CFF' }, { type: 'PLA', color: '1BA1E2FF' }] });
+  // A PLA + PETG print (multi-material).
+  prints.push({ dev: dev.Euler, title: 'Hinged box', start: at(14, 0), end: at(16, 0),
+    filaments: [{ type: 'PLA', color: 'F2F2F2FF' }, { type: 'PETG', color: '22D47BFF' }] });
   // A reservation that never produced a cloud print job.
   reservations.push({ name: person(), tool: TOOL_FOR['X1 Carbon'], model: 'Johnson', start: at(14, 0), end: at(16, 0) });
   // A printer whose Bambu name matches no Design Hub model.
@@ -224,10 +232,10 @@ export class DemoBambu {
           costTime: Math.round((end - start) / 1000),
           weight,
           length: Math.round((weight / 2.98) * 1000), // ~2.98 g/m for 1.75 mm filament
-          amsDetailMapping: [{
-            ams: 0, filamentType: FILAMENT_BY_PRODUCT[p.dev.dev_product_name] || 'PLA',
-            sourceColor: FILAMENT_COLOR[p.dev.dev_product_name] || '1BA1E2FF', weight, nozzleId: 0,
-          }],
+          amsDetailMapping: (p.filaments
+            ? p.filaments.map((f, i) => ({ ams: i, filamentType: f.type, sourceColor: f.color, weight: round1(weight / p.filaments.length), nozzleId: 0 }))
+            : [{ ams: 0, filamentType: FILAMENT_BY_PRODUCT[p.dev.dev_product_name] || 'PLA',
+                 sourceColor: FILAMENT_COLOR[p.dev.dev_product_name] || '1BA1E2FF', weight, nozzleId: 0 }]),
         });
       }
     }

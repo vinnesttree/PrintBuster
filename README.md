@@ -181,7 +181,7 @@ Every successful fetch is also saved to the [print log](#print-log), and the pag
 
 Task status `2` means finished and `3` means failed or cancelled. While a job is printing, the cloud reports its end time as equal to its start time. In that case the slicer's time estimate gives the expected finish, and the chart shows that part faded.
 
-**Material usage.** Each print carries its filament weight, length, and a per-filament breakdown (type and color), shown in the hover tooltip and the table view. These are the slicer's estimates, not measured usage, so an aborted or failed print still shows its full estimate. Prints over `FLAG_WEIGHT_GRAMS` (default 200 g) or `FLAG_DURATION_HOURS` (default 12 h) are flagged, with a badge on the chart and a warning in the tooltip and table.
+**Material usage.** Each print carries its filament weight, length, and a per-filament breakdown (type and colour), shown with colour swatches in the hover tooltip and the table view. These are the slicer's estimates, not measured usage, so an aborted or failed print still shows its full estimate. Prints over `FLAG_WEIGHT_GRAMS` (default 200 g) or `FLAG_DURATION_HOURS` (default 12 h) are flagged, with a badge on the chart and a warning in the tooltip and table. Prints that use more than one filament are labelled **multi-colour** (two or more filaments) and, when the filament types differ, **multi-material** (e.g. PLA + PETG).
 
 ### Matching rules
 

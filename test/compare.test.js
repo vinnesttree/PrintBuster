@@ -73,7 +73,7 @@ describe('buildComparison', () => {
     assert.equal(p.none.match, 'unreserved');
     assert.equal(p.none.uncoveredMinutes, 60);
     assert.equal(p.other.match, 'unreserved');
-    assert.deepEqual(result.summary, { reservations: 3, prints: 4, reserved: 1, partial: 1, unreserved: 2, reservationsWithoutPrint: 1, overWeight: 0, overTime: 0, large: 0 });
+    assert.deepEqual(result.summary, { reservations: 3, prints: 4, reserved: 1, partial: 1, unreserved: 2, reservationsWithoutPrint: 1, overWeight: 0, overTime: 0, large: 0, multiColor: 0, multiMaterial: 0 });
   });
 
   it('does not count a print that starts after a reservation ended as reserved', () => {
@@ -185,5 +185,23 @@ describe('buildComparison', () => {
     const r = compare([], prints, { flagWeightGrams: 0, flagDurationHours: 0 });
     assert.deepEqual([r.prints[0].overWeight, r.prints[0].overTime, r.prints[0].large], [false, false, false]);
     assert.equal(r.summary.large, 0);
+  });
+
+  it('flags multi-color and multi-material prints', () => {
+    const fil = (type, color) => ({ type, grams: 10, color });
+    const prints = [
+      print('single', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00', { filaments: [fil('PLA', '#FFFFFF')] }),
+      print('twotone', 'D-ADA', '2026-10-27T10:00', '2026-10-27T11:00', { filaments: [fil('PLA', '#FF0000'), fil('PLA', '#000000')] }),
+      print('mixed', 'D-OHM', '2026-10-27T09:00', '2026-10-27T10:00', { filaments: [fil('PLA', '#FF0000'), fil('PETG', '#00FF00')] }),
+      print('none', 'D-OHM', '2026-10-27T11:00', '2026-10-27T12:00', { filaments: [] }),
+    ];
+    const by = Object.fromEntries(compare([], prints).prints.map((p) => [p.id, p]));
+    assert.deepEqual([by.single.multiColor, by.single.multiMaterial], [false, false]);
+    assert.deepEqual([by.twotone.multiColor, by.twotone.multiMaterial], [true, false], 'two colors, one type');
+    assert.deepEqual([by.mixed.multiColor, by.mixed.multiMaterial], [true, true], 'two types');
+    assert.deepEqual(by.mixed.materialTypes, ['PLA', 'PETG']);
+    assert.deepEqual([by.none.multiColor, by.none.multiMaterial], [false, false]);
+    const summary = compare([], prints).summary;
+    assert.deepEqual([summary.multiColor, summary.multiMaterial], [2, 1]);
   });
 });

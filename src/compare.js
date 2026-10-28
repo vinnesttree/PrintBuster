@@ -141,6 +141,10 @@ export function buildComparison({
     // estimated for ones still running.
     const overWeight = p.weightGrams != null && p.weightGrams > weightLimit;
     const overTime = pEnd - pStart > durationLimitMs;
+    const filaments = p.filaments || [];
+    const materialTypes = [...new Set(filaments.map((f) => f.type).filter(Boolean))];
+    const multiColor = filaments.length > 1;
+    const multiMaterial = materialTypes.length > 1;
     outPrints.push({
       ...p,
       rowKey,
@@ -151,6 +155,9 @@ export function buildComparison({
       overWeight,
       overTime,
       large: overWeight || overTime,
+      materialTypes,
+      multiColor,
+      multiMaterial,
       matchedReservations: matched.map((r) => ({ id: r.id, name: r.name, start: r.start, end: r.end })),
     });
   }
@@ -212,6 +219,8 @@ export function buildComparison({
       overWeight: outPrints.filter((p) => p.overWeight).length,
       overTime: outPrints.filter((p) => p.overTime).length,
       large: outPrints.filter((p) => p.large).length,
+      multiColor: outPrints.filter((p) => p.multiColor).length,
+      multiMaterial: outPrints.filter((p) => p.multiMaterial).length,
     },
   };
 }
