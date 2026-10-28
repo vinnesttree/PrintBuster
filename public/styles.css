@@ -247,6 +247,13 @@ input[type="date"], input[type="text"] {
 .tt-row.tt-warn .icon { width: 14px; height: 14px; font-size: 9px; }
 .cell-warn { display: inline-flex; align-items: center; gap: 5px; }
 .cell-warn .icon { width: 15px; height: 15px; font-size: 10px; flex: none; }
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex: none; box-shadow: inset 0 0 0 1px var(--border); vertical-align: -1px; }
+.swatches { display: inline-flex; gap: 3px; margin-right: 2px; }
+.tt-row.tt-filament { display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+.tt-row.tt-info { display: flex; align-items: center; gap: 5px; color: var(--text); margin-top: 2px; }
+.tt-row.tt-info .icon { width: 14px; height: 14px; font-size: 9px; }
+.cell-material { display: inline-flex; align-items: center; gap: 5px; }
+.cell-material .icon { width: 15px; height: 15px; font-size: 10px; flex: none; }
 
 /* ---------- Tables ---------- */
 .table-wrap { overflow-x: auto; }

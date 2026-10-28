@@ -135,12 +135,36 @@ const ttWarn = (text) => el('div', { className: 'tt-row tt-warn' },
 const fmtHours = (h) => `${Number.isInteger(h) ? h : h.toFixed(1)} h`;
 
 // "245 g · 81 m (est.) · PETG, PLA" — Bambu's weight/length are slice estimates.
-function materialText(p) {
-  if (p.weightGrams == null && p.lengthMeters == null && !(p.filaments || []).length) return null;
+// "245 g · 81 m (est.)" — the headline amount, or null when unknown.
+function materialAmount(p) {
+  if (p.weightGrams == null && p.lengthMeters == null) return null;
   const amount = [p.weightGrams != null ? `${p.weightGrams} g` : null, p.lengthMeters != null ? `${p.lengthMeters} m` : null]
     .filter(Boolean).join(' · ');
-  const types = [...new Set((p.filaments || []).map((f) => f.type).filter(Boolean))];
-  return `${amount || 'unknown'} (est.)${types.length ? ` · ${types.join(', ')}` : ''}`;
+  return `${amount} (est.)`;
+}
+
+const ttInfo = (text) => el('div', { className: 'tt-row tt-info' },
+  el('span', { className: 'icon icon-info', 'aria-hidden': 'true', text: 'i' }), text);
+
+function swatch(color) {
+  return el('span', { className: 'swatch', style: color ? { background: color } : {}, title: color || 'unknown colour' });
+}
+
+// Tooltip rows for material: amount, per-filament breakdown with colour
+// swatches, then multi-colour / multi-material labels.
+function materialRows(p) {
+  const filaments = p.filaments || [];
+  const rows = [];
+  const amount = materialAmount(p);
+  if (amount) rows.push(ttRow('Material', amount));
+  for (const f of filaments) {
+    rows.push(el('div', { className: 'tt-row tt-filament' },
+      swatch(f.color),
+      `${f.type || 'Unknown'}${f.grams != null ? ` · ${f.grams} g` : ''}`));
+  }
+  if (p.multiMaterial) rows.push(ttInfo(`Multi-material · ${p.materialTypes.join(', ')}`));
+  if (p.multiColor) rows.push(ttInfo(`Multi-colour · ${filaments.length} filaments`));
+  return rows;
 }
 
 function printTooltip(p, row) {
@@ -151,7 +175,7 @@ function printTooltip(p, row) {
     ttRow('Printer', `${p.deviceName}${row.unmapped ? ' (not matched to a Design Hub model)' : ''}`),
     ttRow('Time', `${fmtWhen(ms(p.start))} → ${fmtWhen(ms(p.end))}${p.estimated ? ' (est.)' : ''}`),
     ttRow('Duration', fmtDuration(ms(p.end) - ms(p.start))),
-    materialText(p) ? ttRow('Material', materialText(p)) : null,
+    ...materialRows(p),
     p.overWeight ? ttWarn(`Over ${state.data.flagWeightGrams} g of filament`) : null,
     p.overTime ? ttWarn(`Runs over ${fmtHours(state.data.flagDurationHours)}`) : null,
     ttRow('Bambu status', bambuStatusText(p)),
@@ -289,7 +313,8 @@ function renderChart() {
         tabindex: '0',
         role: 'img',
         'aria-label': `Print: ${p.title} on ${p.deviceName}, ${fmtWhen(p.s)} to ${fmtWhen(p.e)}. ${MATCH[p.match].label}.`
-          + (p.large ? ` Large print${materialText(p) ? `, ${materialText(p)}` : ''}.` : ''),
+          + (p.large ? ` Large print${materialAmount(p) ? `, ${materialAmount(p)}` : ''}.` : '')
+          + (p.multiMaterial ? ` Multi-material: ${p.materialTypes.join(', ')}.` : p.multiColor ? ' Multi-colour.' : ''),
       });
       // Highlight exactly the part of a partial print that ran unreserved.
       if (p.match === 'partial') {
@@ -514,7 +539,14 @@ function durationCell(p) {
   return flaggedCell(fmtDuration(ms(p.end) - ms(p.start)), p.overTime, `Over ${fmtHours(state.data.flagDurationHours)}`);
 }
 function materialCell(p) {
-  return flaggedCell(materialText(p) || '—', p.overWeight, `Over ${state.data.flagWeightGrams} g`);
+  const filaments = p.filaments || [];
+  const amount = materialAmount(p);
+  if (!amount && !filaments.length) return '—';
+  const text = [amount, p.materialTypes?.length ? p.materialTypes.join(', ') : null].filter(Boolean).join(' · ');
+  return el('span', { className: 'cell-material', title: p.overWeight ? `Over ${state.data.flagWeightGrams} g` : undefined },
+    p.overWeight ? el('span', { className: 'icon icon-partial', 'aria-hidden': 'true', text: '!' }) : null,
+    filaments.length ? el('span', { className: 'swatches' }, filaments.slice(0, 6).map((f) => swatch(f.color))) : null,
+    text || '—');
 }
 
 function renderTables() {
