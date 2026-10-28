@@ -72,6 +72,8 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
       timezone: config.timezone,
       today: todayIn(config.timezone, new Date(now())),
       graceMinutes: config.graceMinutes,
+      flagWeightGrams: config.flagWeightGrams,
+      flagDurationHours: config.flagDurationHours,
       designhub: { configured: config.demo || config.designhub.configured, baseUrl: config.designhub.baseUrl },
       bambu: bambuStatus(),
     });

@@ -43,6 +43,17 @@ describe('PrintLog', () => {
     });
   });
 
+  it('persists material fields (length and amsDetailMapping)', async () => {
+    const { file, log } = await tempLog();
+    const ams = [{ ams: 1, filamentType: 'PETG', weight: 50, sourceColor: 'FF0000FF' }];
+    await log.record({ tasks: [task(1, 0, 1, { weight: 50, length: 16800, amsDetailMapping: ams })], fetchedAt: T0 });
+    const again = new PrintLog(file);
+    await again.load();
+    const [r] = again.query(0, Infinity);
+    assert.equal(r.length, 16800);
+    assert.deepEqual(r.amsDetailMapping, ams);
+  });
+
   it('reloads the latest version of every print and the observed spans', async () => {
     const { file, log } = await tempLog();
     await log.record({ tasks: [task(1, 0, 0, { status: 1 })], fetchedAt: T0 });

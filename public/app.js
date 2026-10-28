@@ -129,6 +129,19 @@ function attachTooltip(node, build) {
 }
 
 const ttRow = (label, value) => el('div', { className: 'tt-row' }, `${label}: `, el('strong', { text: value }));
+const ttWarn = (text) => el('div', { className: 'tt-row tt-warn' },
+  el('span', { className: 'icon icon-partial', 'aria-hidden': 'true', text: '!' }), text);
+
+const fmtHours = (h) => `${Number.isInteger(h) ? h : h.toFixed(1)} h`;
+
+// "245 g · 81 m (est.) · PETG, PLA" — Bambu's weight/length are slice estimates.
+function materialText(p) {
+  if (p.weightGrams == null && p.lengthMeters == null && !(p.filaments || []).length) return null;
+  const amount = [p.weightGrams != null ? `${p.weightGrams} g` : null, p.lengthMeters != null ? `${p.lengthMeters} m` : null]
+    .filter(Boolean).join(' · ');
+  const types = [...new Set((p.filaments || []).map((f) => f.type).filter(Boolean))];
+  return `${amount || 'unknown'} (est.)${types.length ? ` · ${types.join(', ')}` : ''}`;
+}
 
 function printTooltip(p, row) {
   return () => [
@@ -138,6 +151,9 @@ function printTooltip(p, row) {
     ttRow('Printer', `${p.deviceName}${row.unmapped ? ' (not matched to a Design Hub model)' : ''}`),
     ttRow('Time', `${fmtWhen(ms(p.start))} → ${fmtWhen(ms(p.end))}${p.estimated ? ' (est.)' : ''}`),
     ttRow('Duration', fmtDuration(ms(p.end) - ms(p.start))),
+    materialText(p) ? ttRow('Material', materialText(p)) : null,
+    p.overWeight ? ttWarn(`Over ${state.data.flagWeightGrams} g of filament`) : null,
+    p.overTime ? ttWarn(`Runs over ${fmtHours(state.data.flagDurationHours)}`) : null,
     ttRow('Bambu status', bambuStatusText(p)),
     p.matchedReservations.length
       ? ttRow('Reservation', p.matchedReservations.map((r) => `${r.name} (${fmtClock(ms(r.start))}–${fmtClock(ms(r.end))})`).join(', '))
@@ -272,7 +288,8 @@ function renderChart() {
         style: { left: `${left}%`, width: `${width}%`, top: `${lane * LANE_H + PRINT_TOP}px` },
         tabindex: '0',
         role: 'img',
-        'aria-label': `Print: ${p.title} on ${p.deviceName}, ${fmtWhen(p.s)} to ${fmtWhen(p.e)}. ${MATCH[p.match].label}.`,
+        'aria-label': `Print: ${p.title} on ${p.deviceName}, ${fmtWhen(p.s)} to ${fmtWhen(p.e)}. ${MATCH[p.match].label}.`
+          + (p.large ? ` Large print${materialText(p) ? `, ${materialText(p)}` : ''}.` : ''),
       });
       // Highlight exactly the part of a partial print that ran unreserved.
       if (p.match === 'partial') {
@@ -292,6 +309,10 @@ function renderChart() {
         const offsetPx = (firstGap - s) * pxPerMs;
         const m = MATCH[p.match];
         node.append(el('span', { className: `icon ${m.cls} print-badge`, 'aria-hidden': 'true', style: { left: `${offsetPx - 2}px` }, text: m.icon }));
+      }
+      if (p.large) {
+        const chip = p.overWeight && p.weightGrams != null ? `${Math.round(p.weightGrams)} g` : fmtHours(state.data.flagDurationHours);
+        node.append(el('span', { className: 'print-large', 'aria-hidden': 'true', text: chip }));
       }
       attachTooltip(node, printTooltip(p, row));
       track.append(node);
@@ -336,7 +357,8 @@ function renderChart() {
   }
 
   const s = data.summary;
-  $('#chart-sub').textContent = `${fmtDayLong(data.day.date)} · ${s.reservations} reservations, ${s.prints} prints · times in ${state.config.timezone}`;
+  const largeNote = s.large ? `, ${s.large} large` : '';
+  $('#chart-sub').textContent = `${fmtDayLong(data.day.date)} · ${s.reservations} reservations, ${s.prints} prints${largeNote} · times in ${state.config.timezone}`;
 }
 
 // When the day does not fit on screen, start at the first activity of the day.
@@ -482,6 +504,19 @@ function table(headers, rows, emptyNode) {
     el('tbody', {}, rows.map((cells) => el('tr', {}, cells.map((c, i) => el('td', { className: headers[i][1] }, c))))));
 }
 
+// A table cell that shows a value and, when flagged, a leading warning icon.
+function flaggedCell(text, flagged, title) {
+  if (!flagged) return text;
+  return el('span', { className: 'cell-warn', title },
+    el('span', { className: 'icon icon-partial', 'aria-hidden': 'true', text: '!' }), text);
+}
+function durationCell(p) {
+  return flaggedCell(fmtDuration(ms(p.end) - ms(p.start)), p.overTime, `Over ${fmtHours(state.data.flagDurationHours)}`);
+}
+function materialCell(p) {
+  return flaggedCell(materialText(p) || '—', p.overWeight, `Over ${state.data.flagWeightGrams} g`);
+}
+
 function renderTables() {
   const { prints, reservations, rows, sources } = state.data;
   const rowLabel = new Map(rows.map((r) => [r.key, r.label]));
@@ -512,14 +547,15 @@ function renderTables() {
   ));
 
   $('#all-prints').replaceChildren(table(
-    [['Match'], ['Printer'], ['Print'], ['Start', 'time'], ['End', 'time'], ['Duration', 'num'], ['Bambu status']],
+    [['Match'], ['Printer'], ['Print'], ['Start', 'time'], ['End', 'time'], ['Duration', 'num'], ['Material'], ['Bambu status']],
     prints.map((p) => [
       statusChip(p.match),
       rowLabel.get(p.rowKey) === p.deviceName ? p.deviceName : `${p.deviceName} (${rowLabel.get(p.rowKey)})`,
       p.title,
       fmtWhen(ms(p.start)),
       fmtWhen(ms(p.end)) + (p.estimated ? ' (est.)' : ''),
-      fmtDuration(ms(p.end) - ms(p.start)),
+      durationCell(p),
+      materialCell(p),
       bambuStatusText(p),
     ]),
     el('p', { className: 'empty', text: state.data.printsAvailable ? 'No Bambu prints on this day.' : 'No Bambu print data for this day.' }),

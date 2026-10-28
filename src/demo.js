@@ -23,6 +23,9 @@ const TOOL_FOR = {
   P1S: 'Bambu Lab P1S',
   A1: 'Bambu Lab A1',
 };
+const FILAMENT_BY_PRODUCT = { 'X1 Carbon': 'PLA', P1S: 'PETG', A1: 'PLA' };
+const FILAMENT_COLOR = { 'X1 Carbon': '1BA1E2FF', P1S: 'E8603CFF', A1: '22D47BFF' };
+
 const OTHER_TOOLS = [
   { model: 'GoldenBee', tool: 'Formlabs Form 3+' },
   { model: 'TangibleRabbit', tool: 'Formlabs Form 3+' },
@@ -89,6 +92,8 @@ function daySchedule(date, zone) {
   prints.push({ dev: dev.Bernouli, title: 'Long infill test', start: r.start.plus({ minutes: 10 }), end: r.end.plus({ minutes: 95 }) });
   // Overnight print started without a reservation.
   prints.push({ dev: dev.Clarke, title: 'Overnight lattice', start: at(22, 15), end: at(22, 15).plus({ hours: 6, minutes: 20 }) });
+  // A long, heavy print that trips both the weight and duration flags.
+  prints.push({ dev: dev.Johnson, title: 'Full-bed marathon', start: at(18, 0), end: at(18, 0).plus({ hours: 14, minutes: 30 }) });
   // A reservation that never produced a cloud print job.
   reservations.push({ name: person(), tool: TOOL_FOR['X1 Carbon'], model: 'Johnson', start: at(14, 0), end: at(16, 0) });
   // A printer whose Bambu name matches no Design Hub model.
@@ -201,6 +206,7 @@ export class DemoBambu {
         if (start > now) continue;
         const end = p.end.toMillis();
         const running = end > now;
+        const weight = Math.round(((end - start) / 60000) * 0.35 * 10) / 10;
         out.push({
           id: Number(`${day.replaceAll('-', '')}${String(start % 100000).padStart(5, '0')}`) + out.length,
           title: p.title,
@@ -216,7 +222,12 @@ export class DemoBambu {
           // 2 = finished, 3 = failed; the running code is undocumented.
           status: running ? 1 : p.failed ? 3 : 2,
           costTime: Math.round((end - start) / 1000),
-          weight: Math.round(((end - start) / 60000) * 0.35 * 10) / 10,
+          weight,
+          length: Math.round((weight / 2.98) * 1000), // ~2.98 g/m for 1.75 mm filament
+          amsDetailMapping: [{
+            ams: 0, filamentType: FILAMENT_BY_PRODUCT[p.dev.dev_product_name] || 'PLA',
+            sourceColor: FILAMENT_COLOR[p.dev.dev_product_name] || '1BA1E2FF', weight, nozzleId: 0,
+          }],
         });
       }
     }

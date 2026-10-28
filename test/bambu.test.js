@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, beforeEach } from 'node:test';
-import { BambuClient, mapTaskStatus, normalizeTask } from '../src/bambu.js';
+import { BambuClient, mapTaskStatus, normalizeTask, parseFilaments } from '../src/bambu.js';
 import { createMockUpstream, task } from './helpers/mock-upstream.js';
 
 const NOW = Date.parse('2026-10-27T20:00:00Z'); // 3:00 pm CDT
@@ -61,6 +61,32 @@ describe('normalizeTask', () => {
   it('marks running jobs past their estimate as overdue', () => {
     const p = normalizeTask(task(9, 'DEV1', '2026-10-27T10:00', null, { status: 1, costTime: 3600 }), names, NOW);
     assert.equal(p.overdue, true);
+  });
+
+  it('extracts material usage: weight, length, and per-filament breakdown', () => {
+    const raw = task(20, 'DEV1', '2026-10-27T09:00', '2026-10-27T11:00', {
+      weight: 245.37, length: 81234,
+      amsDetailMapping: [
+        { ams: 1, filamentType: 'PETG', weight: 163.83, sourceColor: 'FF5500FF' },
+        { ams: 2, filamentType: 'PLA', weight: 81.5, sourceColor: 'FFFFFFFF' },
+      ],
+    });
+    const p = normalizeTask(raw, names, NOW);
+    assert.equal(p.weightGrams, 245.4);
+    assert.equal(p.lengthMeters, 81.2);
+    assert.deepEqual(p.filaments, [
+      { type: 'PETG', grams: 163.8, color: '#FF5500' },
+      { type: 'PLA', grams: 81.5, color: '#FFFFFF' },
+    ]);
+  });
+
+  it('handles tasks with no material data', () => {
+    const p = normalizeTask(task(21, 'DEV1', '2026-10-27T09:00', '2026-10-27T10:00'), names, NOW);
+    assert.equal(p.weightGrams, null);
+    assert.equal(p.lengthMeters, null);
+    assert.deepEqual(p.filaments, []);
+    assert.deepEqual(parseFilaments(undefined), []);
+    assert.deepEqual(parseFilaments([{ filamentType: '', weight: 0 }]), []);
   });
 
   it('gives jobs cancelled immediately a one-minute footprint', () => {

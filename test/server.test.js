@@ -62,6 +62,17 @@ describe('config', () => {
     assert.throws(() => loadConfig({ TIMEZONE: 'Mars/Olympus' }, []), /TIMEZONE/);
     assert.throws(() => loadConfig({ MATCH_GRACE_MINUTES: '-3' }, []), /MATCH_GRACE_MINUTES/);
     assert.throws(() => loadConfig({ BAMBU_REGION: 'eu' }, []), /BAMBU_REGION/);
+    assert.throws(() => loadConfig({ FLAG_WEIGHT_GRAMS: '-5' }, []), /FLAG_WEIGHT_GRAMS/);
+    assert.throws(() => loadConfig({ FLAG_DURATION_HOURS: 'abc' }, []), /FLAG_DURATION_HOURS/);
+  });
+
+  it('reads the large-print thresholds, defaulting to 200 g and 12 h', () => {
+    const d = loadConfig({}, []);
+    assert.equal(d.flagWeightGrams, 200);
+    assert.equal(d.flagDurationHours, 12);
+    const c = loadConfig({ FLAG_WEIGHT_GRAMS: '500', FLAG_DURATION_HOURS: '8.5' }, []);
+    assert.equal(c.flagWeightGrams, 500);
+    assert.equal(c.flagDurationHours, 8.5);
   });
 });
 
@@ -275,5 +286,56 @@ describe('print log', () => {
     assert.equal(data.printsAvailable, true);
     assert.deepEqual(data.prints.map((p) => p.id), ['bb-1', 'bb-2', 'bb-3']);
     assert.equal(data.prints[2].status, 'unknown', 'cannot confirm it is still printing');
+  });
+});
+
+describe('material usage and large-print flags', () => {
+  const NOW = Date.parse('2026-10-27T23:00:00Z');
+
+  async function go(env = {}) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-mat-'));
+    const up = createMockUpstream({
+      hub: { reservations: [{ name: 'Jane', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-27T00:00', end: '2026-10-27T23:00' }] },
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }],
+        tasks: [
+          task(1, 'D-ADA', '2026-10-27T08:00', '2026-10-27T09:00', { weight: 250,
+            length: 84000, amsDetailMapping: [{ filamentType: 'PETG', weight: 250, sourceColor: 'FF0000FF' }] }),
+          task(2, 'D-ADA', '2026-10-27T00:00', '2026-10-27T18:00', { weight: 40 }),
+          task(3, 'D-ADA', '2026-10-27T20:00', '2026-10-27T21:00', { weight: 40 }),
+        ],
+      },
+    });
+    const base = {
+      DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test',
+      DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret', BAMBU_ACCESS_TOKEN: 'env-token',
+      PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'), CACHE_SECONDS: '0', ...env,
+    };
+    const api = await start(base, { fetch: up.fetch, now: () => NOW });
+    return api;
+  }
+
+  it('surfaces material and flags prints over the thresholds', async () => {
+    const api = await go();
+    const cfg = await (await api.get('/api/config')).json();
+    assert.equal(cfg.flagWeightGrams, 200);
+    assert.equal(cfg.flagDurationHours, 12);
+
+    const data = await (await api.get('/api/compare?date=2026-10-27')).json();
+    assert.equal(data.flagWeightGrams, 200);
+    const by = Object.fromEntries(data.prints.map((p) => [p.id, p]));
+    assert.deepEqual([by['bb-1'].overWeight, by['bb-1'].overTime, by['bb-1'].large], [true, false, true]);
+    assert.equal(by['bb-1'].weightGrams, 250);
+    assert.deepEqual(by['bb-1'].filaments, [{ type: 'PETG', grams: 250, color: '#FF0000' }]);
+    assert.deepEqual([by['bb-2'].overWeight, by['bb-2'].overTime, by['bb-2'].large], [false, true, true]);
+    assert.deepEqual([by['bb-3'].overWeight, by['bb-3'].overTime, by['bb-3'].large], [false, false, false]);
+    assert.deepEqual([data.summary.overWeight, data.summary.overTime, data.summary.large], [1, 1, 2]);
+  });
+
+  it('disables a flag when its threshold is 0', async () => {
+    const api = await go({ FLAG_WEIGHT_GRAMS: '0', FLAG_DURATION_HOURS: '0' });
+    const data = await (await api.get('/api/compare?date=2026-10-27')).json();
+    assert.equal(data.summary.large, 0);
+    assert.ok(data.prints.every((p) => !p.large));
   });
 });

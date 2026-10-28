@@ -73,7 +73,7 @@ describe('buildComparison', () => {
     assert.equal(p.none.match, 'unreserved');
     assert.equal(p.none.uncoveredMinutes, 60);
     assert.equal(p.other.match, 'unreserved');
-    assert.deepEqual(result.summary, { reservations: 3, prints: 4, reserved: 1, partial: 1, unreserved: 2, reservationsWithoutPrint: 1 });
+    assert.deepEqual(result.summary, { reservations: 3, prints: 4, reserved: 1, partial: 1, unreserved: 2, reservationsWithoutPrint: 1, overWeight: 0, overTime: 0, large: 0 });
   });
 
   it('does not count a print that starts after a reservation ended as reserved', () => {
@@ -158,5 +158,32 @@ describe('buildComparison', () => {
   it('leaves out prints that do not touch the selected day', () => {
     const result = compare([], [print('old', 'D-ADA', '2026-10-26T09:00', '2026-10-26T10:00')]);
     assert.equal(result.prints.length, 0);
+  });
+
+  it('flags prints over the weight and duration thresholds', () => {
+    const prints = [
+      print('heavy', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00', { weightGrams: 250 }),
+      print('long', 'D-ADA', '2026-10-27T00:00', '2026-10-27T18:00', { weightGrams: 50 }),
+      print('both', 'D-OHM', '2026-10-27T00:00', '2026-10-27T20:00', { weightGrams: 900 }),
+      print('small', 'D-OHM', '2026-10-27T09:00', '2026-10-27T10:00', { weightGrams: 50 }),
+      print('noweight', 'D-OHM', '2026-10-27T11:00', '2026-10-27T12:00', { weightGrams: null }),
+    ];
+    const r = compare([], prints, { flagWeightGrams: 200, flagDurationHours: 12 });
+    const by = Object.fromEntries(r.prints.map((p) => [p.id, p]));
+    assert.deepEqual([by.heavy.overWeight, by.heavy.overTime, by.heavy.large], [true, false, true]);
+    assert.deepEqual([by.long.overWeight, by.long.overTime, by.long.large], [false, true, true]);
+    assert.deepEqual([by.both.overWeight, by.both.overTime, by.both.large], [true, true, true]);
+    assert.deepEqual([by.small.overWeight, by.small.overTime, by.small.large], [false, false, false]);
+    assert.equal(by.noweight.overWeight, false, 'no weight data cannot exceed the weight limit');
+    assert.deepEqual([r.summary.overWeight, r.summary.overTime, r.summary.large], [2, 2, 3]);
+    assert.equal(r.flagWeightGrams, 200);
+    assert.equal(r.flagDurationHours, 12);
+  });
+
+  it('a threshold of 0 disables that flag', () => {
+    const prints = [print('heavy', 'D-ADA', '2026-10-27T00:00', '2026-10-27T20:00', { weightGrams: 900 })];
+    const r = compare([], prints, { flagWeightGrams: 0, flagDurationHours: 0 });
+    assert.deepEqual([r.prints[0].overWeight, r.prints[0].overTime, r.prints[0].large], [false, false, false]);
+    assert.equal(r.summary.large, 0);
   });
 });

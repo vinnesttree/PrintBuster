@@ -42,9 +42,14 @@ export function buildComparison({
   printerOrder = [],
   printerMap = new Map(),
   graceMinutes = 15,
+  // A print is "large" above these; 0 disables that flag.
+  flagWeightGrams = 0,
+  flagDurationHours = 0,
   // Spans of time ([startMs, endMs]) in which Bambu's print list was observed.
   printCoverage = [[-Infinity, Infinity]],
 }) {
+  const weightLimit = flagWeightGrams > 0 ? flagWeightGrams : Infinity;
+  const durationLimitMs = flagDurationHours > 0 ? flagDurationHours * 3600000 : Infinity;
   const dayStart = ms(day.start);
   const dayEnd = ms(day.end);
   const graceMs = graceMinutes * 60000;
@@ -132,6 +137,10 @@ export function buildComparison({
     if (!overlaps(pStart, pEnd, dayStart, dayEnd)) continue;
     row.printCount++;
     if (match === 'unreserved' || match === 'partial') row.flagged++;
+    // Weight is a slice estimate; duration is actual for finished prints and
+    // estimated for ones still running.
+    const overWeight = p.weightGrams != null && p.weightGrams > weightLimit;
+    const overTime = pEnd - pStart > durationLimitMs;
     outPrints.push({
       ...p,
       rowKey,
@@ -139,6 +148,9 @@ export function buildComparison({
       uncoveredMinutes,
       uncovered: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
       unmappedPrinter: row.unmapped,
+      overWeight,
+      overTime,
+      large: overWeight || overTime,
       matchedReservations: matched.map((r) => ({ id: r.id, name: r.name, start: r.start, end: r.end })),
     });
   }
@@ -185,6 +197,8 @@ export function buildComparison({
     day,
     now: new Date(now).toISOString(),
     graceMinutes,
+    flagWeightGrams,
+    flagDurationHours,
     rows: outRows,
     reservations: outReservations,
     prints: outPrints,
@@ -195,6 +209,9 @@ export function buildComparison({
       partial: count('partial'),
       unreserved: count('unreserved'),
       reservationsWithoutPrint: outReservations.filter((r) => r.noPrint).length,
+      overWeight: outPrints.filter((p) => p.overWeight).length,
+      overTime: outPrints.filter((p) => p.overTime).length,
+      large: outPrints.filter((p) => p.large).length,
     },
   };
 }
