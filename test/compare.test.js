@@ -81,6 +81,87 @@ describe('buildComparison', () => {
     assert.equal(result.prints[0].match, 'unreserved');
   });
 
+  it("treats a print that started outside every reservation as unreserved, even if it ends in one", () => {
+    // Ohm is booked 13:00-14:00. Started at 12:00, before the 15-minute
+    // grace period, and ran into the booking: no reservation, not a run-over.
+    const result = compare(
+      [res('r1', 'Ohm', '2026-10-27T13:00', '2026-10-27T14:00')],
+      [print('early', 'D-OHM', '2026-10-27T12:00', '2026-10-27T13:40'),
+        // 20 minutes early is still too early.
+        print('early20', 'D-OHM', '2026-10-27T12:40', '2026-10-27T13:50')],
+    );
+    const p = byId(result);
+    for (const id of ['early', 'early20']) {
+      assert.equal(p[id].match, 'unreserved', id);
+      assert.equal(p[id].noReservationReason, 'started-outside', id);
+      assert.deepEqual(p[id].matchedReservations.map((r) => r.id), ['r1'], 'whose booking it ran into');
+    }
+    assert.equal(p.early.uncoveredMinutes, 100, 'the whole print is unreserved');
+    assert.equal(p.early.insideShare, 0.55);
+    assert.equal(result.summary.partial, 0);
+    assert.equal(result.reservations[0].noPrint, false, 'the printer was busy during the booking');
+  });
+
+  it("treats a print started after one reservation ended and running into the next as unreserved", () => {
+    // Started in the grace period after Amy's booking, before the grace
+    // period of Ben's.
+    const result = compare(
+      [res('a', 'Ada', '2026-10-27T09:00', '2026-10-27T12:00', { name: 'Amy' }),
+        res('b', 'Ada', '2026-10-27T12:30', '2026-10-27T14:00', { name: 'Ben' })],
+      [print('p', 'D-ADA', '2026-10-27T12:05', '2026-10-27T13:30')],
+    );
+    assert.deepEqual([result.prints[0].match, result.prints[0].noReservationReason], ['unreserved', 'started-outside']);
+  });
+
+  it('treats an overnight print started just after one booking ended as unreserved on the next day', () => {
+    // From a live report: Clarke, failed print Oct 26 11:34 PM to Oct 27
+    // 1:45 PM, viewed on Oct 27. It started 4 minutes after an evening
+    // booking ended, and only ran into Hoai's 1:30-5:00 PM booking at the
+    // end. It used to show as "outside reservation", 13 h 30 min unreserved.
+    const result = compare(
+      [res('evening', 'Ohm', '2026-10-26T21:00', '2026-10-26T23:30'),
+        res('hoai', 'Ohm', '2026-10-27T13:30', '2026-10-27T17:00', { name: 'Hoai Nguyen' })],
+      [print('p', 'D-OHM', '2026-10-26T23:34', '2026-10-27T13:45', { status: 'failed' })],
+    );
+    const p = result.prints[0];
+    assert.deepEqual([p.match, p.noReservationReason, p.insideShare, p.uncoveredMinutes], ['unreserved', 'started-outside', 0.048, 851]);
+    assert.deepEqual(p.matchedReservations.map((r) => r.id), ['hoai']);
+    assert.equal(result.summary.partial, 0);
+  });
+
+  it('counts a print started in the grace period before a reservation as reserved', () => {
+    const result = compare(
+      [res('r1', 'Ohm', '2026-10-27T13:00', '2026-10-27T14:00')],
+      [print('runs-in', 'D-OHM', '2026-10-27T12:46', '2026-10-27T13:50'),
+        // Entirely in the grace period: it overlaps no booking, but started in one's grace.
+        print('short', 'D-OHM', '2026-10-27T12:47', '2026-10-27T12:58')],
+    );
+    const p = byId(result);
+    assert.deepEqual([p['runs-in'].match, p.short.match], ['reserved', 'reserved']);
+    assert.deepEqual(p.short.matchedReservations.map((r) => r.id), ['r1']);
+  });
+
+  it('treats a print with less than 10% inside reservations as unreserved', () => {
+    // Started at 9:58 in a booking that ends at 10:00 (+15 min grace), then
+    // ran until 14:00: 17 of 242 minutes inside, 7%.
+    const result = compare(
+      [res('r1', 'Ada', '2026-10-27T09:00', '2026-10-27T10:00')],
+      [print('p', 'D-ADA', '2026-10-27T09:58', '2026-10-27T14:00')],
+    );
+    const p = result.prints[0];
+    assert.deepEqual([p.match, p.noReservationReason, p.insideShare], ['unreserved', 'mostly-outside', 0.07]);
+    assert.equal(p.uncoveredMinutes, 242);
+  });
+
+  it('still counts a print exactly 10% inside as a run-over', () => {
+    const result = compare(
+      [res('r1', 'Ada', '2026-10-27T09:00', '2026-10-27T10:00')],
+      [print('p', 'D-ADA', '2026-10-27T09:54', '2026-10-27T10:54')],
+      { graceMinutes: 0 },
+    );
+    assert.deepEqual([result.prints[0].match, result.prints[0].insideShare, result.prints[0].uncoveredMinutes], ['partial', 0.1, 54]);
+  });
+
   it('treats back-to-back reservations as continuous coverage', () => {
     const result = compare(
       [res('a', 'Ada', '2026-10-27T09:00', '2026-10-27T10:00'), res('b', 'Ada', '2026-10-27T10:00', '2026-10-27T12:00')],

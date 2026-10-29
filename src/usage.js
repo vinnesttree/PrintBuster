@@ -4,6 +4,9 @@
 // Rules:
 // - A print belongs to the period its start time falls in, so adjacent
 //   ranges never count the same print twice.
+// - A print the comparison found to have no reservation (it started outside
+//   every reservation, or less than 10% of it was inside) is charged to
+//   nobody.
 // - It is charged to the reservation on its printer that it started in, if it
 //   started in the first half of that reservation (midpoint included) or in
 //   the grace period before it. Otherwise it is charged to the reservation on
@@ -142,7 +145,7 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
     const usedGrams = p.weightGrams != null ? round1(p.weightGrams * fraction) : null;
     if (usedGrams == null) weightMissing++;
     const candidates = resByRow.get(p.rowKey) || [];
-    const holder = chooseReservation(p, candidates, graceMs);
+    const holder = p.match === 'unreserved' ? null : chooseReservation(p, candidates, graceMs);
     const outsideShare = holder
       ? outsideShareOf(p, candidates.filter((r) => r.name === holder.name), graceMs)
       : 1;
@@ -164,6 +167,7 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
       materials: usedMaterials(p, fraction),
       excluded: false,
       reservation: null,
+      noReservationReason: p.noReservationReason || null,
     };
 
     if (!holder) {

@@ -2,6 +2,13 @@ export const normalizeName = (s) => String(s || '').toLowerCase().replace(/[^a-z
 
 const ms = (iso) => Date.parse(iso);
 const overlaps = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && aEnd > bStart;
+const totalMs = (segments) => segments.reduce((sum, [s, e]) => sum + e - s, 0);
+
+// Time outside reservations shorter than this is ignored.
+const TOLERANCE_MS = 60000;
+// A print with less than this share of its time inside reservations (grace
+// included) has no reservation.
+export const MIN_INSIDE_SHARE = 0.1;
 
 // Resolve which Design Hub model (the agenda's "Model" column) a Bambu printer
 // is: explicit PRINTER_MAP entry, then identical name, then a name containing
@@ -116,23 +123,37 @@ export function buildComparison({
     const rowKey = deviceRow.get(p.deviceId) || rowFor(`bambu:${p.deviceId}`, p.deviceName).key;
     const row = rows.get(rowKey);
     const candidates = resByRow.get(rowKey) || [];
-    const matched = candidates.filter((r) => overlaps(pStart, pEnd, ms(r.start), ms(r.end)));
+    // Reservations the print started in: from the grace period before one up
+    // to its end. Starting after a reservation ended isn't starting in it.
+    const startedIn = candidates.filter((r) => pStart >= ms(r.start) - graceMs - TOLERANCE_MS && pStart < ms(r.end));
+    const matched = candidates.filter((r) => overlaps(pStart, pEnd, ms(r.start), ms(r.end)) || startedIn.includes(r));
     matched.forEach((r) => printedReservations.add(r.id));
 
+    // A print is "partial" (ran outside its reservation) only if it started
+    // in one. A print that started outside every reservation has none, even
+    // when its end runs into someone's booking; so does one with less than
+    // MIN_INSIDE_SHARE of its time inside reservations (grace included).
     let match;
     let gaps = [];
+    let noReservationReason = null;
+    let insideShare = null;
     if (!hubAvailable) {
       match = 'unknown';
-    } else if (!matched.length) {
-      match = 'unreserved';
-      gaps = [[pStart, pEnd]];
     } else {
       const covered = candidates.map((r) => [ms(r.start) - graceMs, ms(r.end) + graceMs]);
       gaps = uncoveredSegments(pStart, pEnd, covered);
-      if (gaps.reduce((sum, [s, e]) => sum + e - s, 0) < 60000) gaps = [];
-      match = gaps.length ? 'partial' : 'reserved';
+      if (totalMs(gaps) < TOLERANCE_MS) gaps = [];
+      const durationMs = Math.max(pEnd - pStart, 1);
+      insideShare = Math.max(0, durationMs - totalMs(gaps)) / durationMs;
+      if (!startedIn.length || insideShare < MIN_INSIDE_SHARE) {
+        match = 'unreserved';
+        if (matched.length) noReservationReason = startedIn.length ? 'mostly-outside' : 'started-outside';
+        gaps = [[pStart, pEnd]];
+      } else {
+        match = gaps.length ? 'partial' : 'reserved';
+      }
     }
-    const uncoveredMinutes = Math.round(gaps.reduce((sum, [s, e]) => sum + e - s, 0) / 60000);
+    const uncoveredMinutes = Math.round(totalMs(gaps) / 60000);
 
     if (!overlaps(pStart, pEnd, dayStart, dayEnd)) continue;
     row.printCount++;
@@ -150,6 +171,10 @@ export function buildComparison({
       rowKey,
       match,
       uncoveredMinutes,
+      // Why a print overlapping a reservation still has none, and the share
+      // of it inside reservations (grace included).
+      noReservationReason,
+      insideShare: insideShare === null ? null : Math.round(insideShare * 1000) / 1000,
       uncovered: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
       unmappedPrinter: row.unmapped,
       overWeight,

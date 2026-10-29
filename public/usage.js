@@ -337,18 +337,25 @@ function renderAllTime() {
       el('td', { className: 'num col-res time', text: m.lastPrint ? fmtDate(m.lastPrint) : '—' }))))));
 }
 
+const NO_RESERVATION = {
+  none: 'Overlapped no reservation',
+  'started-outside': 'Started outside a reservation, then ran into one',
+  'mostly-outside': 'Under 10% inside a reservation',
+};
+
 function renderUnattributed() {
   const u = state.data.unattributed;
   $('#unattributed-sum').textContent = state.data.available ? `${u.prints} prints · ${fmtGrams(u.grams)}` : '';
   $('#unattributed').replaceChildren(u.list.length
     ? el('table', {},
-      el('thead', {}, el('tr', {}, ['Started', 'Printer', 'Print', 'Status', 'Filament'].map((h, i) => el('th', { scope: 'col', className: i === 4 ? 'num' : null, text: h })))),
+      el('thead', {}, el('tr', {}, ['Started', 'Printer', 'Print', 'Status', 'Filament', 'Why'].map((h, i) => el('th', { scope: 'col', className: i === 4 ? 'num' : null, text: h })))),
       el('tbody', {}, u.list.map((p) => el('tr', {},
         el('td', { className: 'time', text: fmtDateTime(p.start) }),
         el('td', { text: p.printer }),
         el('td', { text: p.title }),
         el('td', { text: (METHOD[p.method] || (() => p.status))(p) }),
-        el('td', { className: 'num', text: fmtGrams(p.usedGrams) })))))
+        el('td', { className: 'num', text: fmtGrams(p.usedGrams) }),
+        el('td', { className: 'muted', text: NO_RESERVATION[p.noReservationReason] || NO_RESERVATION.none })))))
     : el('p', { className: 'empty', text: 'Every print in this range overlapped a reservation.' }));
 }
 

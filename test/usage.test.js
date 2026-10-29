@@ -180,6 +180,25 @@ describe('attributeUsage', () => {
     assert.deepEqual([out.byName.Amy.grams, out.byName.Ben.grams], [100, 0]);
   });
 
+  it('charges nobody for a print that started outside every reservation and ran into one', () => {
+    const out = usage(
+      [res('r1', 'Ben', 'Archimedes', '2026-10-27T10:00', '2026-10-27T12:00')],
+      [print('p1', 'D-ARC', '2026-10-27T09:00', '2026-10-27T11:30', { weightGrams: 60 })],
+      { graceMinutes: 15 },
+    );
+    assert.deepEqual([out.byName.Ben.grams, out.byName.Ben.excludedPrints, out.byName.Ben.list.length], [0, 0, 0]);
+    assert.deepEqual(out.unattributed.list.map((p) => [p.id, p.noReservationReason, p.usedGrams]), [['p1', 'started-outside', 60]]);
+  });
+
+  it('charges nobody for a print with less than 10% inside a reservation', () => {
+    const out = usage(
+      [res('r1', 'Amy', 'Archimedes', '2026-10-27T08:00', '2026-10-27T09:00')],
+      [print('p1', 'D-ARC', '2026-10-27T08:58', '2026-10-27T13:00')],
+      { graceMinutes: 15 },
+    );
+    assert.deepEqual([out.byName.Amy.excludedPrints, out.unattributed.list[0]?.noReservationReason], [0, 'mostly-outside']);
+  });
+
   it('falls back to the reservation overlapped most for a print started in the second half', () => {
     const out = usage(
       [res('r1', 'Amy', 'Archimedes', '2026-10-27T08:00', '2026-10-27T10:00'),

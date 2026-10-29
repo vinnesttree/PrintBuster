@@ -78,8 +78,18 @@ function bambuStatusText(p) {
   return p.status === 'unknown' && p.rawStatus !== null ? `${label} (status ${p.rawStatus})` : label;
 }
 
+// Why a print that overlaps a reservation still counts as having none.
+function noReservationText(p) {
+  if (p.noReservationReason === 'started-outside') return 'Started outside a reservation, then ran into one';
+  if (p.noReservationReason === 'mostly-outside') return `Only ${Math.round(p.insideShare * 100)}% of it was inside a reservation (under 10%)`;
+  return '';
+}
+
 function outsideText(p) {
-  if (p.match === 'unreserved') return `Entire print (${fmtDuration(p.uncoveredMinutes * 60000)})`;
+  if (p.match === 'unreserved') {
+    const why = noReservationText(p);
+    return `Entire print (${fmtDuration(p.uncoveredMinutes * 60000)})${why ? ` · ${why.charAt(0).toLowerCase()}${why.slice(1)}` : ''}`;
+  }
   if (p.match === 'partial') return `${fmtDuration(p.uncoveredMinutes * 60000)} outside`;
   return '';
 }
@@ -171,6 +181,7 @@ function printTooltip(p, row) {
   return () => [
     el('div', { className: 'tt-title', text: p.title + (p.plate ? ` · ${p.plate}` : '') }),
     statusChip(p.match),
+    noReservationText(p) ? ttInfo(noReservationText(p)) : null,
     p.uncoveredMinutes && p.match !== 'unknown' ? ttRow('Unreserved time', fmtDuration(p.uncoveredMinutes * 60000)) : null,
     ttRow('Printer', `${p.deviceName}${row.unmapped ? ' (not matched to a Design Hub model)' : ''}`),
     ttRow('Time', `${fmtWhen(ms(p.start))} → ${fmtWhen(ms(p.end))}${p.estimated ? ' (est.)' : ''}`),
@@ -419,8 +430,8 @@ function renderTiles() {
     el('div', { className: 'tile-value', text: value }),
     el('div', { className: 'tile-note', text: note }));
   $('#tiles').replaceChildren(
-    tile('icon-bad', '✕', 'Prints with no reservation', val(s.unreserved, both), 'Bambu jobs on a printer nobody had reserved', both && s.unreserved > 0),
-    tile('icon-partial', '!', 'Prints outside their reservation', val(s.partial, both), `Started early or ran late by more than ${graceMinutes} min`),
+    tile('icon-bad', '✕', 'Prints with no reservation', val(s.unreserved, both), 'Bambu jobs that didn\u2019t start in a reservation, or were under 10% inside one', both && s.unreserved > 0),
+    tile('icon-partial', '!', 'Prints outside their reservation', val(s.partial, both), `Started in a reservation, then ran more than ${graceMinutes} min past it`),
     tile('icon-ok', '✓', 'Prints within a reservation', val(s.reserved, both), `of ${val(s.prints, printsAvailable)} Bambu prints this day`),
     tile('icon-info', 'i', 'Reservations', val(s.reservations, sources.designhub.ok),
       printsAvailable ? `${s.reservationsWithoutPrint} on Bambu printers with no print recorded` : 'Design Hub agenda'),
