@@ -199,9 +199,11 @@ Each print then gets one of these results:
 
 | Result | Rule |
 | --- | --- |
-| No reservation | The print overlaps no reservation on its printer, or its printer can't be matched to any agenda model. |
-| Outside reservation | The print overlaps a reservation but spends more than a minute outside every reservation plus the grace period. Back-to-back reservations count as one block. |
-| Within reservation | The print is fully covered by reservations plus the grace period. |
+| No reservation | The print didn't start in a reservation on its printer, or less than 10% of it was inside reservations (grace period included), or its printer can't be matched to any agenda model. A print that started outside every reservation and then ran into someone's booking is **No reservation**, not a run-over. |
+| Outside reservation | The print started in a reservation but spent more than a minute outside every reservation plus the grace period. Back-to-back reservations count as one block. |
+| Within reservation | The print started in a reservation and is fully covered by reservations plus the grace period. |
+
+"Started in a reservation" means it started between the grace period before a reservation (default 15 minutes) and that reservation's end. Starting after a reservation ended, even within the grace period after it, isn't starting in it. A print that started more than a minute too early counts as starting outside. Exactly 10% inside still counts as having a reservation. The tooltip and the flagged-prints table say which rule made a print "No reservation".
 
 ### Filament usage rules
 
@@ -214,7 +216,7 @@ The usage page charges prints to reservation holders:
 - **A cancelled or failed print** counts in proportion to how long it ran: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. If Bambu gave no time estimate, the full weight counts.
 - **A print still running** counts the share of its estimated time that has elapsed.
 - A print belongs to the date range its start time falls in, so adjacent ranges never count it twice.
-- Prints that overlap no reservation are listed separately under "Prints with no reservation" and aren't charged to anyone.
+- Prints the waterfall marks **No reservation** aren't charged to anyone. That includes prints that started outside every reservation and then ran into one, and prints less than 10% inside reservations. They're listed under "Prints with no reservation", with the reason.
 
 The weights are the slicer's estimates. Prints come from the print log, so usage is only known for times the log covers. Gaps are shown as a warning.
 
