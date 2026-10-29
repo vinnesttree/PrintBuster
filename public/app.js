@@ -147,19 +147,24 @@ const fmtHours = (h) => `${Number.isInteger(h) ? h : h.toFixed(1)} h`;
 // "245 g · 81 m (est.)" — the headline amount, or null when unknown.
 const fmtGrams = (g) => `${g < 10 ? g.toFixed(1) : Math.round(g)} g`;
 
+// Bambu's weight and length are the slicer's estimates for the whole job,
+// so a cancelled or failed print (one status in Bambu's data) shows no
+// amounts: they would overstate what it used.
+const showsGrams = (p) => p.status !== 'failed';
+
 // The tag after a print bar: its filament weight, plus the duration when it
 // runs over the long-print threshold. Prints over the weight threshold get
 // the heavy (most noticeable) tag.
 function printChip(p) {
   const parts = [];
-  if (p.weightGrams != null) parts.push(fmtGrams(p.weightGrams));
+  if (showsGrams(p) && p.weightGrams != null) parts.push(fmtGrams(p.weightGrams));
   if (p.overTime) parts.push(`${fmtHours(state.data.flagDurationHours)}+`);
   if (!parts.length) return null;
   return { text: parts.join(' · '), heavy: Boolean(p.overWeight), long: Boolean(p.overTime) };
 }
 
 function materialAmount(p) {
-  if (p.weightGrams == null && p.lengthMeters == null) return null;
+  if (!showsGrams(p) || (p.weightGrams == null && p.lengthMeters == null)) return null;
   const amount = [p.weightGrams != null ? `${p.weightGrams} g` : null, p.lengthMeters != null ? `${p.lengthMeters} m` : null]
     .filter(Boolean).join(' · ');
   return `${amount} (est.)`;
@@ -179,10 +184,13 @@ function materialRows(p) {
   const rows = [];
   const amount = materialAmount(p);
   if (amount) rows.push(ttRow('Material', amount));
+  else if (!showsGrams(p) && (p.weightGrams != null || filaments.length)) {
+    rows.push(ttRow('Material', 'amount not shown for a cancelled print'));
+  }
   for (const f of filaments) {
     rows.push(el('div', { className: 'tt-row tt-filament' },
       swatch(f.color),
-      `${f.type || 'Unknown'}${f.grams != null ? ` · ${f.grams} g` : ''}`));
+      `${f.type || 'Unknown'}${showsGrams(p) && f.grams != null ? ` · ${f.grams} g` : ''}`));
   }
   if (p.multiMaterial) rows.push(ttInfo(`Multi-material · ${p.materialTypes.join(', ')}`));
   if (p.multiColor) rows.push(ttInfo(`Multi-colour · ${filaments.length} filaments`));
@@ -345,7 +353,7 @@ function renderChart() {
         tabindex: '0',
         role: 'img',
         'aria-label': `Print: ${p.title} on ${p.deviceName}, ${fmtWhen(p.s)} to ${fmtWhen(p.e)}. ${MATCH[p.match].label}.`
-          + (p.weightGrams != null ? ` ${fmtGrams(p.weightGrams)} of filament (estimate).` : '')
+          + (showsGrams(p) && p.weightGrams != null ? ` ${fmtGrams(p.weightGrams)} of filament (estimate).` : '')
           + (p.large ? ' Large print.' : '')
           + (p.multiMaterial ? ` Multi-material: ${p.materialTypes.join(', ')}.` : p.multiColor ? ' Multi-colour.' : ''),
       });
