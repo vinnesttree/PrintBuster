@@ -160,7 +160,9 @@ export function buildComparison({
     if (match === 'unreserved' || match === 'partial') row.flagged++;
     // Weight is a slice estimate; duration is actual for finished prints and
     // estimated for ones still running.
-    const overWeight = p.weightGrams != null && p.weightGrams > weightLimit;
+    // A cancelled or failed print's weight is the slicer's estimate for the
+    // whole job, not what it used, so it isn't flagged as heavy.
+    const overWeight = p.status !== 'failed' && p.weightGrams != null && p.weightGrams > weightLimit;
     const overTime = pEnd - pStart > durationLimitMs;
     const filaments = p.filaments || [];
     const materialTypes = [...new Set(filaments.map((f) => f.type).filter(Boolean))];

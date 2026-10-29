@@ -261,6 +261,12 @@ describe('buildComparison', () => {
     assert.equal(r.flagDurationHours, 12);
   });
 
+  it("doesn't flag a cancelled or failed print as heavy, since its weight is the whole job's", () => {
+    const result = compare([], [print('c', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00', { status: 'failed', weightGrams: 450 })],
+      { flagWeightGrams: 200 });
+    assert.deepEqual([result.prints[0].overWeight, result.prints[0].large, result.summary.overWeight], [false, false, 0]);
+  });
+
   it('a threshold of 0 disables that flag', () => {
     const prints = [print('heavy', 'D-ADA', '2026-10-27T00:00', '2026-10-27T20:00', { weightGrams: 900 })];
     const r = compare([], prints, { flagWeightGrams: 0, flagDurationHours: 0 });
