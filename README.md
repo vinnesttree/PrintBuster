@@ -15,7 +15,7 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 
-The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 92 days). Search by name and sort by name, print count or filament used. Expand a member to see each print and whether it counted. See [Filament usage rules](#filament-usage-rules).
+The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 92 days). Search by name and sort by name, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. **Recalculate** re-reads the range's reservations from Design Hub, recalculates and saves the result. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
 
 ## Quick start
 
@@ -57,8 +57,8 @@ The container starts again whenever Docker starts (for example after a reboot), 
 How the container uses `.env`:
 
 - **Publishing address.** `HOST` and `PORT` in `.env` choose where the page is published on the host. The default `127.0.0.1:3000` means only that computer can open it. To share it on the network, set `HOST=0.0.0.0` and also set `APP_PASSWORD`. Inside the container the app always listens on `0.0.0.0:3000`.
-- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log). `docker compose down -v` deletes the volume and everything in it.
-- **Copying the print log out.** `docker compose cp printbuster:/app/data/print-log.jsonl .`
+- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log) and the [saved reservations and usage](#saved-reservations-and-usage). `docker compose down -v` deletes the volume and everything in it.
+- **Copying the saved data out.** `docker compose cp printbuster:/app/data/print-log.jsonl .` (likewise `reservations.json` and `usage.json`).
 - **Health.** The container reports healthy or unhealthy in `docker ps`, using an unauthenticated `/healthz` endpoint that returns only `{"ok":true}`.
 - **Quoting.** Wrap passwords in single quotes in `.env`, e.g. `BAMBU_PASSWORD='p@ss$word#1'`. Compose treats an unquoted or double-quoted `$` as the start of a variable name, and `npm start` treats an unquoted `#` as the start of a comment. Single quotes keep the value exactly as typed in both.
 
@@ -97,6 +97,8 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `CACHE_SECONDS` | How long fetched data is reused before the sites are asked again. Default 60. |
 | `BAMBU_POLL_MINUTES` | How often Bambu is checked in the background to fill the [print log](#print-log), even when nobody has the page open. Default 15. `0` turns background checks off. |
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
+| `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
+| `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
 
 ### Bambu sign-in codes
 
@@ -205,14 +207,24 @@ Each print then gets one of these results:
 
 The usage page charges prints to reservation holders:
 
-- A print is charged to the reservation on its printer that it overlaps most. The grace period counts as inside the reservation.
-- **A print more than half outside its reservation isn't counted.** It is listed under the member as "Not counted". Exactly half outside still counts.
+- **A print that starts in the first half of a reservation**, or in the grace period (default 15 minutes) before it, is charged to that reservation, even if it then overlaps a later reservation more. The midpoint counts as the first half.
+- Any other print is charged to the reservation on its printer that it overlaps most.
+- **A print more than half outside the member's reservation isn't counted.** "Outside" means outside that member's own reservations on that printer, each widened by the grace period, so back-to-back bookings by the same person count as one block. This rule wins over the first one: a print started in Amy's slot that mostly runs in Ben's is Amy's, and isn't counted. It is listed under the member as "Not counted", and nobody else is charged. Exactly half outside still counts.
+- **Every print in a reservation is tracked against it.** Expanding a member lists each reservation with its prints, grams and not-counted prints, including reservations with no prints.
 - **A cancelled or failed print** counts in proportion to how long it ran: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. If Bambu gave no time estimate, the full weight counts.
 - **A print still running** counts the share of its estimated time that has elapsed.
 - A print belongs to the date range its start time falls in, so adjacent ranges never count it twice.
 - Prints that overlap no reservation are listed separately under "Prints with no reservation" and aren't charged to anyone.
 
-The weights are the slicer's estimates. The page fetches one Design Hub agenda page per day in the range; past days are cached for 10 minutes. Prints come from the print log, so usage is only known for times the log covers. Gaps are shown as a warning.
+The weights are the slicer's estimates. Prints come from the print log, so usage is only known for times the log covers. Gaps are shown as a warning.
+
+### Saved reservations and usage
+
+Both files are in `data/`, on the Docker volume, and readable only by the file's owner because they contain member names.
+
+- **`reservations.json`** holds every Design Hub agenda day PrintBuster has read, with all of that day's reservations. A day read after it ended is final: the usage page uses the saved copy instead of asking Design Hub again, so past usage still works if Design Hub is down or a reservation later disappears from it. While Bambu polling is on, PrintBuster also saves each finished day since the print log started, a few days per poll, even if nobody opens the usage page. If Design Hub can't be reached for a day that isn't final yet, an earlier saved copy is used and the page says so.
+- **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation, grams used, whether it counted and why. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does.
+- **Refresh** re-reads today only. **Recalculate** re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests. The last recalculation's time and dates are recorded in `usage.json`.
 
 ## Limitations
 
@@ -232,13 +244,16 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/config, /api/bambu/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate, /api/config, /api/bambu/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
 src/usage.js       Filament usage per reservation holder (attribution rules)
 src/service.js     Fetches both sources in parallel, caches, polls Bambu, builds the comparison
 src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its coverage
+src/reservations.js Saved agenda days (data/reservations.json)
+src/usagelog.js    Saved per-print usage results (data/usage.json)
+src/files.js       Atomic, owner-only JSON file saving
 src/demo.js        Demo data in the real upstream formats
 public/            The pages: waterfall (index.html) and filament usage (usage.html); no build step
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)

@@ -11,11 +11,18 @@ const servers = [];
 after(() => servers.forEach((s) => s.close()));
 
 async function start(env, opts) {
+  // Keep the saved reservations in the test's own folder, never in data/.
+  if (env.PRINT_LOG_PATH && !env.RESERVATION_LOG_PATH) {
+    const dir = path.dirname(env.PRINT_LOG_PATH);
+    env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json') };
+  }
   const app = await createApp(loadConfig(env, ['node', 'server.js']), opts);
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   servers.push(server);
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
+    app,
+    base,
     get: (p, headers) => fetch(base + p, { headers }),
     post: (p, body) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   };
@@ -357,8 +364,8 @@ describe('filament usage by user', () => {
     }
   });
 
-  async function live(hubOverrides = {}) {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-'));
+  async function live(hubOverrides = {}, dir = null) {
+    dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-'));
     const up = createMockUpstream({
       hub: {
         reservations: [{ name: 'Jane Doe', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T12:00' }],
@@ -379,7 +386,7 @@ describe('filament usage by user', () => {
       DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
       BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
     }, { fetch: up.fetch, now: () => NOW });
-    return { api, up };
+    return { api, up, dir };
   }
 
   it('charges each user for prints in their reservations, prorating cancelled ones', async () => {
@@ -391,11 +398,106 @@ describe('filament usage by user', () => {
     assert.deepEqual(jane.list.map((p) => [p.method, p.usedGrams]), [['finished', 100], ['cancelled', 20]]);
     assert.deepEqual([data.unattributed.prints, data.unattributed.grams], [1, 40]);
 
-    // One agenda page per day (the day before too), then served from cache.
+    // One agenda page per day: the day before and after too (bookings from
+    // the evening before, or starting just after the grace period). Past days
+    // are then final and come from the saved copy.
     const agendaCalls = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
-    assert.deepEqual(agendaCalls(), ['2026-10-25', '2026-10-26']);
+    assert.deepEqual(agendaCalls(), ['2026-10-25', '2026-10-26', '2026-10-27']);
+    await api.get('/api/usage?from=2026-10-26&to=2026-10-26&refresh=1');
+    assert.deepEqual(agendaCalls().length, 4, 'only today is read again');
+  });
+
+  it('keeps reservations on disk and uses them after a restart when Design Hub is down', async () => {
+    const { api, dir } = await live();
+    const before = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    const saved = JSON.parse(await fs.readFile(path.join(dir, 'reservations.json'), 'utf8'));
+    assert.deepEqual(Object.entries(saved.days).map(([d, v]) => [d, v.final]), [['2026-10-25', true], ['2026-10-26', true], ['2026-10-27', false]]);
+    assert.equal(saved.days['2026-10-26'].reservations[0].name, 'Jane Doe');
+
+    // A new app on the same folder, with the Design Hub login now failing.
+    const { api: restarted } = await live({ password: 'changed' }, dir);
+    const after = await (await restarted.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.equal(after.available, true);
+    assert.deepEqual(
+      [after.sources.designhub.ok, after.sources.designhub.savedDays, after.sources.designhub.staleDays],
+      [true, 2, 1],
+    );
+    assert.deepEqual(after.users, before.users);
+  });
+
+  it('saves the calculated usage of every print to the volume', async () => {
+    const { api, dir } = await live();
     await api.get('/api/usage?from=2026-10-26&to=2026-10-26');
-    assert.equal(agendaCalls().length, 2);
+    const saved = JSON.parse(await fs.readFile(path.join(dir, 'usage.json'), 'utf8'));
+    const byId = Object.fromEntries(Object.values(saved.prints).map((p) => [p.id, p]));
+    assert.deepEqual(
+      ['bb-1', 'bb-2', 'bb-3'].map((id) => [byId[id].usedGrams, byId[id].counted, byId[id].reservation?.name ?? null]),
+      [[100, true, 'Jane Doe'], [20, true, 'Jane Doe'], [40, false, null]],
+    );
+    assert.equal(saved.lastRecalculation, null);
+    if (process.platform !== 'win32') assert.equal((await fs.stat(path.join(dir, 'usage.json'))).mode & 0o777, 0o600);
+  });
+
+  it('recalculates from freshly read reservations and saves the new results', async () => {
+    const { api, up, dir } = await live();
+    const first = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.equal(first.users.find((u) => u.name === 'Jane Doe').grams, 120);
+
+    // Design Hub is corrected afterwards: the booking was Sam's.
+    up.hub.reservations = [{ name: 'Sam Lee', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T12:00' }];
+    const agendaCalls = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).length;
+    const callsBefore = agendaCalls();
+
+    // A normal load keeps using the saved, final day.
+    const cached = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.ok(cached.users.some((u) => u.name === 'Jane Doe'));
+
+    // Only JSON is accepted, so a plain cross-site form post can't trigger it.
+    const form = await fetch(`${api.base}/api/usage/recalculate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'from=2026-10-26&to=2026-10-26',
+    });
+    assert.equal(form.status, 415);
+    assert.equal(agendaCalls(), callsBefore);
+
+    const recalc = await api.post('/api/usage/recalculate', { from: '2026-10-26', to: '2026-10-26' });
+    assert.equal(recalc.status, 200);
+    const data = await recalc.json();
+    assert.equal(data.recalculated, true);
+    assert.equal(agendaCalls() - callsBefore, 3, 'every day re-read, final ones too');
+    assert.deepEqual(data.users.map((u) => [u.name, u.grams]), [['Sam Lee', 120]]);
+
+    const reservations = JSON.parse(await fs.readFile(path.join(dir, 'reservations.json'), 'utf8'));
+    assert.equal(reservations.days['2026-10-26'].reservations[0].name, 'Sam Lee');
+    const usage = JSON.parse(await fs.readFile(path.join(dir, 'usage.json'), 'utf8'));
+    assert.equal(Object.values(usage.prints).find((p) => p.id === 'bb-1').reservation.name, 'Sam Lee');
+    assert.deepEqual(usage.lastRecalculation, { at: new Date(NOW).toISOString(), from: '2026-10-26', to: '2026-10-26' });
+
+    // Later normal loads use the corrected copy.
+    const after = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.deepEqual(after.users.map((u) => u.name), ['Sam Lee']);
+  });
+
+  it('rejects a recalculation without valid dates', async () => {
+    const { api } = await live();
+    const r = await api.post('/api/usage/recalculate', { from: 'yesterday' });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error.message, /YYYY-MM-DD/);
+  });
+
+  it('saves finished agenda days in the background, newest first', async () => {
+    const { api, up } = await live();
+    const { service } = api.app.locals;
+    // The print log started on Oct 20 (Chicago); yesterday is Oct 26.
+    await service.printLog.record({ tasks: [task(9, 'D-ADA', '2026-10-20T12:00', '2026-10-20T13:00')], fetchedAt: Date.parse('2026-10-20T19:00:00Z') });
+    const agendaDates = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
+    await service.archiveAgenda();
+    assert.deepEqual(agendaDates(), ['2026-10-26', '2026-10-25', '2026-10-24']);
+    await service.archiveAgenda();
+    await service.archiveAgenda();
+    assert.deepEqual(agendaDates().slice(3), ['2026-10-23', '2026-10-22', '2026-10-21', '2026-10-20', '2026-10-19']);
+    assert.ok(['2026-10-19', '2026-10-26'].every((d) => service.reservationArchive.get(d)?.final));
+    await service.archiveAgenda();
+    assert.equal(agendaDates().length, 8, 'nothing left to save');
   });
 
   it('attributes nothing when the agenda cannot be read', async () => {

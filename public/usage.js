@@ -25,6 +25,9 @@ function el(tag, props = {}, ...children) {
 const ms = (iso) => Date.parse(iso);
 const fmt = (opts) => new Intl.DateTimeFormat('en-US', { timeZone: state.config.timezone, ...opts });
 const fmtDateTime = (iso) => fmt({ month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
+const fmtTime = (iso) => fmt({ hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
+const localDay = (iso) => fmt({ year: 'numeric', month: 'numeric', day: 'numeric' }).format(new Date(iso));
+const fmtSpan = (start, end) => `${fmtDateTime(start)} – ${localDay(start) === localDay(end) ? fmtTime(end) : fmtDateTime(end)}`;
 const fmtDay = (iso) => new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })
   .format(new Date(`${iso}T12:00:00Z`));
 const pct = (f) => `${Math.round(f * 100)}%`;
@@ -79,6 +82,19 @@ function renderBanners() {
     list.push(banner('icon-bad', '✕', 'Usage cannot be attributed without the Design Hub agenda',
       [e.message, e.hint].filter(Boolean).join(' ')));
   }
+  if (d.sources.designhub.ok && d.sources.designhub.staleDays) {
+    const n = d.sources.designhub.staleDays;
+    list.push(banner('icon-partial', '!', 'Design Hub could not be reached',
+      `${n} day${n === 1 ? '' : 's'} in this range use${n === 1 ? 's' : ''} reservations saved earlier, which may have changed since.`));
+  }
+  if (d.sources.reservationArchive?.writeError) {
+    list.push(banner('icon-partial', '!', 'Reservations could not be saved',
+      `${d.sources.reservationArchive.writeError}. Usage still shows, but past reservations depend on Design Hub until saving works.`));
+  }
+  if (d.sources.usageLog?.writeError) {
+    list.push(banner('icon-partial', '!', 'Usage could not be saved',
+      `${d.sources.usageLog.writeError}. The figures below are correct but were not written to the data folder.`));
+  }
   if (!d.sources.bambu.ok) {
     const e = d.sources.bambu.error;
     list.push(banner('icon-partial', '!', 'Bambu Cloud data unavailable',
@@ -110,7 +126,7 @@ function renderTiles() {
   $('#tiles').replaceChildren(
     tile('icon-ok', '✓', 'Filament counted', v(fmtGrams(t?.countedGrams)), t ? `${t.countedPrints} prints inside reservations` : 'Needs the Design Hub agenda'),
     tile('icon-info', 'i', 'Members', v(String(t?.users)), t ? `${printing} printed something` : ''),
-    tile('icon-partial', '!', 'Not counted', v(fmtGrams(t?.excludedGrams)), t ? `${t.excludedPrints} prints more than half outside a reservation` : ''),
+    tile('icon-partial', '!', 'Not counted', v(fmtGrams(t?.excludedGrams)), t ? `${t.excludedPrints} prints more than half outside their reservation` : ''),
     tile('icon-bad', '✕', 'No reservation', v(fmtGrams(t?.unattributedGrams)), t ? `${t.unattributedPrints} prints not charged to anyone` : ''),
   );
 }
@@ -162,22 +178,43 @@ function materialsText(materials) {
   return entries.length ? entries.map(([type, g]) => `${type} ${fmtGrams(g)}`).join(' · ') : '—';
 }
 
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function bookingSummary(b) {
+  if (!b.prints && !b.excludedPrints) return 'no prints';
+  const parts = [];
+  if (b.prints) parts.push(`${plural(b.prints, 'print')} · ${fmtGrams(b.grams)}`);
+  if (b.excludedPrints) parts.push(`${b.excludedPrints} not counted · ${fmtGrams(b.excludedGrams)}`);
+  return parts.join(' · ');
+}
+
+// The member's reservations in time order, each followed by the prints
+// charged to it.
 function printRows(u) {
+  const cols = ['Started', 'Print', 'Status', 'Filament', 'Outside their reservation', ''];
+  const rows = [];
+  for (const b of u.bookings) {
+    rows.push(el('tr', { className: 'booking-row' },
+      el('th', { scope: 'rowgroup', colspan: String(cols.length) },
+        el('span', { text: `${fmtSpan(b.start, b.end)} · ${b.printer}` }),
+        el('span', { className: 'muted', text: ` · ${bookingSummary(b)}` }))));
+    for (const p of u.list.filter((x) => x.reservation?.id === b.id)) {
+      rows.push(el('tr', { className: p.excluded ? 'is-excluded' : null },
+        el('td', { className: 'time', text: fmtDateTime(p.start) }),
+        el('td', { text: p.title }),
+        el('td', { text: (METHOD[p.method] || (() => p.status))(p) }),
+        el('td', { className: 'num' },
+          p.usedGrams == null ? '—' : fmtGrams(p.usedGrams),
+          p.estimateGrams != null && p.usedGrams !== p.estimateGrams ? el('span', { className: 'muted', text: ` of ${fmtGrams(p.estimateGrams)}` }) : null),
+        el('td', { className: 'num', text: p.outsideShare ? pct(p.outsideShare) : '—' }),
+        el('td', {}, p.excluded
+          ? el('span', { className: 'status' }, icon('icon-partial', '!'), 'Not counted')
+          : el('span', { className: 'status' }, icon('icon-ok', '✓'), 'Counted'))));
+    }
+  }
   return el('table', { className: 'detail-table' },
-    el('thead', {}, el('tr', {},
-      ['Started', 'Printer', 'Print', 'Status', 'Filament', 'Outside reservation', ''].map((h, i) => el('th', { scope: 'col', className: i === 4 || i === 5 ? 'num' : null, text: h })))),
-    el('tbody', {}, u.list.map((p) => el('tr', { className: p.excluded ? 'is-excluded' : null },
-      el('td', { className: 'time', text: fmtDateTime(p.start) }),
-      el('td', { text: p.printer }),
-      el('td', { text: p.title }),
-      el('td', { text: (METHOD[p.method] || (() => p.status))(p) }),
-      el('td', { className: 'num' },
-        p.usedGrams == null ? '—' : fmtGrams(p.usedGrams),
-        p.estimateGrams != null && p.usedGrams !== p.estimateGrams ? el('span', { className: 'muted', text: ` of ${fmtGrams(p.estimateGrams)}` }) : null),
-      el('td', { className: 'num', text: p.outsideShare ? pct(p.outsideShare) : '—' }),
-      el('td', {}, p.excluded
-        ? el('span', { className: 'status' }, icon('icon-partial', '!'), 'Not counted')
-        : el('span', { className: 'status' }, icon('icon-ok', '✓'), 'Counted'))))));
+    el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { scope: 'col', className: i === 3 || i === 4 ? 'num' : null, text: h })))),
+    el('tbody', {}, rows));
 }
 
 function renderUsers() {
@@ -204,9 +241,9 @@ function renderUsers() {
       el('td', {},
         el('button', {
           className: 'expand-btn', type: 'button', 'aria-expanded': String(open), 'aria-controls': detailId,
-          disabled: !u.list.length,
+          disabled: !u.bookings.length,
           onclick: () => { if (open) state.expanded.delete(u.name); else state.expanded.add(u.name); renderUsers(); },
-        }, el('span', { className: 'chev', 'aria-hidden': 'true', text: u.list.length ? (open ? '▾' : '▸') : '' }), u.name),
+        }, el('span', { className: 'chev', 'aria-hidden': 'true', text: u.bookings.length ? (open ? '▾' : '▸') : '' }), u.name),
         u.isEvent ? el('span', { className: 'tag', text: 'Event' }) : null),
       el('td', { className: 'num col-res', text: String(u.reservations) }),
       el('td', { className: 'num', text: String(u.prints) }),
@@ -250,11 +287,15 @@ function renderUnattributed() {
 
 function render() {
   $('#demo-badge').hidden = !state.data.demo;
+  $('#grace-min').textContent = String(state.data.graceMinutes);
   renderBanners();
   renderTiles();
   renderUsers();
   renderUnattributed();
-  $('#updated').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  $('#updated').textContent = state.data.recalculated
+    ? `Recalculated${state.data.sources.usageLog ? ' and saved' : ''} ${time}`
+    : `Updated ${time}`;
 }
 
 // ---------------------------------------------------------------- data
@@ -270,7 +311,7 @@ function saveUrl() {
 }
 
 let loadSeq = 0;
-async function load({ force = false } = {}) {
+async function load({ force = false, recalculate = false } = {}) {
   const from = $('#from').value;
   const to = $('#to').value;
   if (!from || !to) return;
@@ -279,9 +320,12 @@ async function load({ force = false } = {}) {
   state.loading = true;
   $('#users').classList.add('is-loading');
   $('#refresh').disabled = true;
-  $('#updated').textContent = 'Loading…';
+  $('#recalc').disabled = true;
+  $('#updated').textContent = recalculate ? 'Recalculating… re-reading every day from Design Hub' : 'Loading…';
   try {
-    const res = await fetch(`/api/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${force ? '&refresh=1' : ''}`);
+    const res = recalculate
+      ? await fetch('/api/usage/recalculate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to }) })
+      : await fetch(`/api/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${force ? '&refresh=1' : ''}`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error?.message || `HTTP ${res.status}`);
     if (seq !== loadSeq) return;
@@ -289,13 +333,14 @@ async function load({ force = false } = {}) {
     render();
   } catch (err) {
     if (seq !== loadSeq) return;
-    $('#banners').replaceChildren(banner('icon-bad', '✕', 'Could not load filament usage', err.message));
+    $('#banners').replaceChildren(banner('icon-bad', '✕', recalculate ? 'Could not recalculate filament usage' : 'Could not load filament usage', err.message));
     $('#updated').textContent = '';
   } finally {
     if (seq === loadSeq) {
       state.loading = false;
       $('#users').classList.remove('is-loading');
       $('#refresh').disabled = false;
+      $('#recalc').disabled = false;
     }
   }
 }
@@ -317,6 +362,7 @@ async function init() {
   $('#from').addEventListener('change', () => load());
   $('#to').addEventListener('change', () => load());
   $('#refresh').addEventListener('click', () => load({ force: true }));
+  $('#recalc').addEventListener('click', () => load({ recalculate: true }));
   for (const btn of document.querySelectorAll('.presets [data-days]')) {
     btn.addEventListener('click', () => {
       $('#to').value = isoToday();

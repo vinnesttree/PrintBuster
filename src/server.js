@@ -8,6 +8,8 @@ import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
 import { describeError, SourceError } from './errors.js';
 import { PrintLog } from './printlog.js';
+import { ReservationArchive } from './reservations.js';
+import { UsageLog } from './usagelog.js';
 import { CompareService } from './service.js';
 import { isIsoDate, shiftDate, todayIn } from './time.js';
 
@@ -20,6 +22,8 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   let designhub;
   let bambu;
   let printLog = null;
+  let reservationArchive = null;
+  let usageLog = null;
   if (config.demo) {
     designhub = new DemoDesignHub({ zone: config.timezone, now });
     bambu = new DemoBambu({ zone: config.timezone, now });
@@ -32,8 +36,12 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     await bambu.init();
     printLog = new PrintLog(config.printLogPath);
     await printLog.load();
+    reservationArchive = new ReservationArchive(config.reservationLogPath);
+    await reservationArchive.load();
+    usageLog = new UsageLog(config.usageLogPath);
+    await usageLog.load();
   }
-  const service = new CompareService(config, { designhub, bambu, printLog, now });
+  const service = new CompareService(config, { designhub, bambu, printLog, reservationArchive, usageLog, now });
   const bambuStatus = () => (bambu.status ? bambu.status() : { configured: false });
 
   const app = express();
@@ -94,6 +102,16 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     res.json(await service.usage(from, to, { force: req.query.refresh === '1' }));
   });
 
+  // Re-reads the range's reservations from Design Hub (saved past days too),
+  // recalculates usage and saves both. JSON only, so another site can't
+  // trigger it with a plain form post.
+  app.post('/api/usage/recalculate', async (req, res) => {
+    if (!req.is('application/json')) {
+      return res.status(415).json({ error: { message: 'Send JSON: {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}', code: 'bad_type' } });
+    }
+    res.json(await service.usage(req.body?.from, req.body?.to, { force: true, recalculate: true }));
+  });
+
   app.post('/api/bambu/code', async (req, res) => {
     if (!bambu.submitCode) return res.status(400).json({ error: { message: 'Not available in demo mode.' } });
     await bambu.submitCode(req.body?.code);
@@ -142,9 +160,11 @@ async function main() {
   // `docker stop` would otherwise wait out its timeout and kill the process.
   const shutdown = () => {
     app.locals.service.stopPolling();
-    // Let any print log write in flight finish before exiting.
+    // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
       await app.locals.service.printLog?.queue;
+      await app.locals.service.reservationArchive?.queue;
+      await app.locals.service.usageLog?.queue;
       process.exit(0);
     });
     setTimeout(() => process.exit(0), 5000).unref();

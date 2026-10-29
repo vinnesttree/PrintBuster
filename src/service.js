@@ -12,6 +12,8 @@ const FRESH_MS = 10 * 60 * 1000;
 export const MAX_USAGE_DAYS = 92;
 // Past days' agendas rarely change; keep them longer than today's.
 const PAST_DAY_TTL_MS = 10 * 60 * 1000;
+// Finished agenda days the background poll saves per run, newest first.
+const ARCHIVE_DAYS_PER_POLL = 3;
 
 // Runs `fn` over `items` with at most `limit` in flight, keeping order.
 async function mapLimit(items, limit, fn) {
@@ -28,11 +30,14 @@ async function mapLimit(items, limit, fn) {
 }
 
 export class CompareService {
-  constructor(config, { designhub, bambu, printLog = null, now = () => Date.now() }) {
+  constructor(config, { designhub, bambu, printLog = null, reservationArchive = null, usageLog = null, now = () => Date.now() }) {
     this.config = config;
     this.designhub = designhub;
     this.bambu = bambu;
     this.printLog = printLog;
+    this.reservationArchive = reservationArchive;
+    this.usageLog = usageLog;
+    this.archiveError = null;
     this.now = now;
     this.cache = new Map();
     this.pollTimer = null;
@@ -91,6 +96,15 @@ export class CompareService {
         // Say it once, not every few minutes.
         if (message !== this.pollError) console.warn(`Bambu print logging paused: ${message}${hint ? ` ${hint}` : ''}`);
         this.pollError = message;
+      }
+      try {
+        await this.archiveAgenda();
+        if (this.archiveError) console.log('Saving reservations resumed.');
+        this.archiveError = null;
+      } catch (err) {
+        const { message, hint } = describeError(err);
+        if (message !== this.archiveError) console.warn(`Saving reservations paused: ${message}${hint ? ` ${hint}` : ''}`);
+        this.archiveError = message;
       } finally {
         this.polling = false;
       }
@@ -98,6 +112,48 @@ export class CompareService {
     run();
     this.pollTimer = setInterval(run, minutes * 60000);
     this.pollTimer.unref();
+  }
+
+  // Reads one agenda day from Design Hub and saves it to the archive. A day
+  // read after it ended is final.
+  async fetchAgendaDay(date) {
+    const reservations = await this.designhub.getDay(date);
+    const fetchedAt = this.now();
+    const final = fetchedAt >= Date.parse(dayBounds(date, this.config.timezone).end);
+    if (this.reservationArchive) await this.reservationArchive.save(date, reservations, { fetchedAt, final });
+    return reservations;
+  }
+
+  // One agenda day for the usage page: from the archive once final (unless
+  // recalculating), else from Design Hub, falling back to an earlier saved
+  // copy if that fails.
+  async agendaDay(date, { force, today, recalculate }) {
+    const saved = this.reservationArchive?.get(date);
+    if (saved?.final && !recalculate) return { reservations: saved.reservations, from: 'archive' };
+    try {
+      const reservations = await this.cached(
+        `hubday:${date}`, () => this.fetchAgendaDay(date), recalculate || (force && date >= today), date < today ? PAST_DAY_TTL_MS : undefined,
+      );
+      return { reservations, from: 'designhub' };
+    } catch (err) {
+      if (saved) return { reservations: saved.reservations, from: 'stale', error: err };
+      throw err;
+    }
+  }
+
+  // Saves finished agenda days that have logged prints (and the day before
+  // the log began) but no final copy yet, so the reservations are kept even
+  // if nobody opens the usage page. Newest first, a few per run.
+  async archiveAgenda() {
+    const since = this.printLog?.stats().since;
+    if (!this.reservationArchive || !since || this.config.demo || !this.config.designhub?.configured) return;
+    const zone = this.config.timezone;
+    const today = todayIn(zone, new Date(this.now()));
+    const yesterday = shiftDate(today, -1);
+    const first = [shiftDate(todayIn(zone, new Date(since)), -1), shiftDate(today, -MAX_USAGE_DAYS)].sort()[1];
+    if (first > yesterday) return;
+    const missing = dateList(first, yesterday).filter((d) => !this.reservationArchive.get(d)?.final).reverse();
+    for (const d of missing.slice(0, ARCHIVE_DAYS_PER_POLL)) await this.fetchAgendaDay(d);
   }
 
   stopPolling() {
@@ -180,8 +236,10 @@ export class CompareService {
   }
 
   // Filament used per reservation holder for prints that started between
-  // `from` and `to` (inclusive local dates).
-  async usage(from, to, { force = false } = {}) {
+  // `from` and `to` (inclusive local dates). The results are saved to the
+  // usage log. `recalculate` first re-reads every day's reservations from
+  // Design Hub, including days already saved as final.
+  async usage(from, to, { force = false, recalculate = false } = {}) {
     const zone = this.config.timezone;
     if (!isIsoDate(from) || !isIsoDate(to)) {
       throw new SourceError('Dates must look like YYYY-MM-DD.', { code: 'bad_date' });
@@ -197,17 +255,21 @@ export class CompareService {
     const rangeEnd = Date.parse(dayBounds(to, zone).end);
 
     // One agenda page per day, plus the day before `from` for bookings that
-    // started the previous evening. Nothing to fetch after today.
-    const lastDay = to < today ? to : today;
+    // started the previous evening, and the day after `to` once a print
+    // could have started in the grace period before its first bookings.
+    const graceMs = this.config.graceMinutes * 60000;
+    const lastDay = rangeEnd - graceMs <= now ? shiftDate(to, 1) : to < today ? to : today;
     const days = shiftDate(from, -1) <= lastDay ? dateList(shiftDate(from, -1), lastDay) : [];
     let reservations = null;
     let hubError = null;
+    const daysFrom = { designhub: 0, archive: 0, stale: 0 };
     try {
-      const perDay = await mapLimit(days, 2, (d) => this.cached(
-        `hubday:${d}`, () => this.designhub.getDay(d), force && d >= today, d < today ? PAST_DAY_TTL_MS : undefined,
-      ));
+      const perDay = await mapLimit(days, 2, (d) => this.agendaDay(d, { force, today, recalculate }));
       const byId = new Map();
-      for (const list of perDay) for (const r of list) byId.set(r.id, r);
+      for (const day of perDay) {
+        daysFrom[day.from]++;
+        for (const r of day.reservations) byId.set(r.id, r);
+      }
       reservations = [...byId.values()];
     } catch (err) {
       hubError = err;
@@ -261,7 +323,11 @@ export class CompareService {
       maxOutsideShare: MAX_OUTSIDE_SHARE,
       printGaps: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
       sources: {
-        designhub: hubError ? { ok: false, error: describeError(hubError) } : { ok: true, days: days.length },
+        designhub: hubError
+          ? { ok: false, error: describeError(hubError) }
+          : { ok: true, days: days.length, savedDays: daysFrom.archive, staleDays: daysFrom.stale },
+        reservationArchive: this.reservationArchive ? this.reservationArchive.stats() : null,
+        usageLog: this.usageLog ? this.usageLog.stats() : null,
         bambu: {
           ok: !bambuError,
           ...(bambuError ? { error: describeError(bambuError), auth: this.bambu.status() } : {}),
@@ -277,8 +343,10 @@ export class CompareService {
     const prints = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
       .filter(Boolean);
+    // Runs past the range by the grace period, for bookings just after it
+    // that a print in the range started in the grace period of.
     const comparison = buildComparison({
-      day: { date: from, start: new Date(rangeStart).toISOString(), end: new Date(rangeEnd).toISOString(), timezone: zone },
+      day: { date: from, start: new Date(rangeStart).toISOString(), end: new Date(rangeEnd + graceMs).toISOString(), timezone: zone },
       now,
       reservations,
       prints,
@@ -288,6 +356,13 @@ export class CompareService {
       graceMinutes: this.config.graceMinutes,
       printCoverage: coverage,
     });
-    return { ...base, available: true, ...attributeUsage({ comparison, rangeStart, rangeEnd, now }) };
+    const usage = attributeUsage({ comparison, rangeStart, rangeEnd, now });
+    if (this.usageLog) {
+      const records = [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
+        .map((r) => ({ ...r, counted: Boolean(r.reservation) && !r.excluded }));
+      await this.usageLog.save(records, { at: now, recalculation: recalculate ? { from, to } : null });
+      base.sources.usageLog = this.usageLog.stats();
+    }
+    return { ...base, available: true, recalculated: recalculate, ...usage };
   }
 }

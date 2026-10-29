@@ -34,7 +34,8 @@
           <button class="btn" type="button" data-days="30">30 days</button>
           <button class="btn" type="button" data-days="90">90 days</button>
         </div>
-        <button id="refresh" class="btn" type="button">Refresh</button>
+        <button id="refresh" class="btn" type="button" title="Re-read today's reservations and recent prints">Refresh</button>
+        <button id="recalc" class="btn" type="button" title="Re-read every day's reservations from Design Hub, recalculate usage and save it">Recalculate</button>
       </div>
       <div class="control-group">
         <label class="sr-only" for="search">Search by name</label>
@@ -55,7 +56,8 @@
           <p id="users-sub" class="muted"></p>
         </div>
         <p class="muted rules">
-          Prints count toward the reservation they overlap most. A print more than half outside its reservation isn't counted.
+          A print counts toward the reservation it started in, if it started in its first half or up to <span id="grace-min">15</span> minutes before it;
+          otherwise toward the reservation it overlaps most. A print more than half outside the member's reservation isn't counted.
           Cancelled prints count for the share of their estimated time they ran.
         </p>
       </div>
