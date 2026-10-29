@@ -9,7 +9,8 @@ export async function writeAtomic(file, text, { mode } = {}) {
 }
 
 // A JSON file saved as a whole on each change, readable only by its owner
-// (the saved reservations and usage hold member names).
+// (the saved reservations and usage hold member names). With no file (demo
+// mode) it is kept in memory only.
 export class JsonFileStore {
   constructor(file, label) {
     this.file = file;
@@ -21,6 +22,7 @@ export class JsonFileStore {
   // The saved object, or null when there is none. An unreadable file is
   // kept aside rather than overwritten by the next save.
   async readJson() {
+    if (!this.file) return null;
     let text;
     try {
       text = await fs.readFile(this.file, 'utf8');
@@ -40,6 +42,7 @@ export class JsonFileStore {
 
   // Queues a save of `toJson()`'s result; failures are kept for stats().
   persist(toJson) {
+    if (!this.file) return this.queue;
     this.queue = this.queue.then(async () => {
       try {
         await fs.mkdir(path.dirname(this.file), { recursive: true });

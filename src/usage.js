@@ -173,7 +173,7 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
       continue;
     }
 
-    record.reservation = { id: holder.id, name: holder.name, start: holder.start, end: holder.end };
+    record.reservation = { id: holder.id, name: holder.name, start: holder.start, end: holder.end, isEvent: Boolean(holder.isEvent) };
     const user = userFor(holder.name, holder.isEvent);
     const booking = bookingFor(user, holder);
     if (outsideShare > maxOutsideShare) {

@@ -214,7 +214,7 @@ export class DemoBambu {
     const out = [];
     for (let back = daysBack; back >= 0; back--) {
       const day = shiftDate(isoDate, -back);
-      for (const p of daySchedule(day, this.zone).prints) {
+      for (const [index, p] of daySchedule(day, this.zone).prints.entries()) {
         const start = p.start.toMillis();
         if (start > now) continue;
         const end = p.end.toMillis();
@@ -224,7 +224,8 @@ export class DemoBambu {
         const plannedMs = p.failed ? (end - start) * 3 : end - start;
         const weight = Math.round((plannedMs / 60000) * 0.35 * 10) / 10;
         out.push({
-          id: Number(`${day.replaceAll('-', '')}${String(start % 100000).padStart(5, '0')}`) + out.length,
+          // Stable for a given print whatever range is asked for.
+          id: Number(`${day.replaceAll('-', '')}${String(index).padStart(4, '0')}`),
           title: p.title,
           designTitle: '',
           plateIndex: 1,

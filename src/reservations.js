@@ -23,6 +23,10 @@ export class ReservationArchive extends JsonFileStore {
     return this.days.get(date);
   }
 
+  dates() {
+    return [...this.days.keys()].sort();
+  }
+
   // Saves one day's reservations. `final` marks a day read after it ended.
   save(date, reservations, { fetchedAt, final }) {
     const prev = this.days.get(date);

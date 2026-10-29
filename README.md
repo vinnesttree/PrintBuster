@@ -15,7 +15,7 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 
-The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 92 days). Search by name and sort by name, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. **Recalculate** re-reads the range's reservations from Design Hub, recalculates and saves the result. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
+The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 92 days). Search by name and sort by name, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. Next to the range figures, an **All time** column and tile show each member's total over all saved data. **Recalculate** re-reads the selected range's reservations from Design Hub, recalculates and saves the result. **Recalculate total** recalculates every saved print from saved data only. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
 
 ## Quick start
 
@@ -223,8 +223,15 @@ The weights are the slicer's estimates. Prints come from the print log, so usage
 Both files are in `data/`, on the Docker volume, and readable only by the file's owner because they contain member names.
 
 - **`reservations.json`** holds every Design Hub agenda day PrintBuster has read, with all of that day's reservations. A day read after it ended is final: the usage page uses the saved copy instead of asking Design Hub again, so past usage still works if Design Hub is down or a reservation later disappears from it. While Bambu polling is on, PrintBuster also saves each finished day since the print log started, a few days per poll, even if nobody opens the usage page. If Design Hub can't be reached for a day that isn't final yet, an earlier saved copy is used and the page says so.
-- **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation, grams used, whether it counted and why. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does.
-- **Refresh** re-reads today only. **Recalculate** re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests. The last recalculation's time and dates are recorded in `usage.json`.
+- **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation, grams used, whether it counted and why. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
+
+The buttons:
+
+- **Refresh** re-reads today only.
+- **Recalculate** works on the selected range. It re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests.
+- **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
+
+`usage.json` records when each kind of recalculation last ran and for which dates. In demo mode both files are kept in memory only.
 
 ## Limitations
 
@@ -244,7 +251,7 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate, /api/config, /api/bambu/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/config, /api/bambu/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching

@@ -356,6 +356,16 @@ describe('filament usage by user', () => {
     assert.deepEqual([data.from, data.to, data.available], ['2026-09-28', '2026-10-27', true]);
     assert.ok(data.users.some((u) => u.prints > 0), 'demo members have usage');
     assert.equal(data.maxOutsideShare, 0.5);
+    assert.ok(data.allTime.countedGrams > 0, 'demo keeps usage in memory');
+    // A range inside the first one adds no prints to the all-time total.
+    const week = await (await api.get('/api/usage?from=2026-10-21&to=2026-10-27')).json();
+    assert.deepEqual(
+      [week.allTime.countedPrints, week.allTime.countedGrams],
+      [data.totals.countedPrints, data.totals.countedGrams],
+    );
+    const total = await api.post('/api/usage/recalculate-total', {});
+    assert.equal(total.status, 200);
+    assert.equal((await total.json()).allTime.lastTotalRecalculation.to, '2026-10-27');
 
     for (const [q, msg] of [['from=2026-10-27&to=2026-10-01', /after the end/], ['from=2026-01-01&to=2026-10-27', /at most 92/], ['from=nope', /YYYY-MM-DD/]]) {
       const r = await api.get(`/api/usage?${q}`);
@@ -475,6 +485,37 @@ describe('filament usage by user', () => {
     // Later normal loads use the corrected copy.
     const after = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
     assert.deepEqual(after.users.map((u) => u.name), ['Sam Lee']);
+  });
+
+  it('recalculates the all-time total from saved data only', async () => {
+    const { api, up } = await live();
+    // Nothing saved yet.
+    const empty = await api.post('/api/usage/recalculate-total', {});
+    assert.equal(empty.status, 400);
+    assert.match((await empty.json()).error.message, /No reservations are saved/);
+
+    const first = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.deepEqual(first.allTime.members.map((m) => [m.name, m.prints, m.grams]), [['Jane Doe', 2, 120]]);
+    assert.deepEqual([first.allTime.countedGrams, first.allTime.unattributedGrams], [120, 40]);
+
+    // A print logged on a day whose reservations were never saved.
+    const { service } = api.app.locals;
+    await service.printLog.record({ tasks: [task(9, 'D-ADA', '2026-10-20T12:00', '2026-10-20T13:00', { weight: 55 })], fetchedAt: NOW });
+    // Design Hub now says the booking was Sam's; the total must not ask it.
+    up.hub.reservations = [{ name: 'Sam Lee', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T12:00' }];
+    const before = up.calls.length;
+
+    const form = await fetch(`${api.base}/api/usage/recalculate-total`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: '' });
+    assert.equal(form.status, 415);
+
+    const r = await api.post('/api/usage/recalculate-total', {});
+    assert.equal(r.status, 200);
+    const { allTime } = await r.json();
+    assert.equal(up.calls.length, before, 'no Design Hub or Bambu requests');
+    assert.deepEqual(allTime.members.map((m) => [m.name, m.prints, m.grams]), [['Jane Doe', 2, 120]]);
+    assert.deepEqual(allTime.lastTotalRecalculation, {
+      at: new Date(NOW).toISOString(), from: '2026-10-25', to: '2026-10-27', prints: 3, skippedPrints: 1,
+    });
   });
 
   it('rejects a recalculation without valid dates', async () => {

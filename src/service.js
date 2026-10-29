@@ -15,6 +15,10 @@ const PAST_DAY_TTL_MS = 10 * 60 * 1000;
 // Finished agenda days the background poll saves per run, newest first.
 const ARCHIVE_DAYS_PER_POLL = 3;
 
+// The per-print results of attributeUsage, as saved in the usage log.
+const usageRecords = (usage) => [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
+  .map((r) => ({ ...r, counted: Boolean(r.reservation) && !r.excluded }));
+
 // Runs `fn` over `items` with at most `limit` in flight, keeping order.
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length);
@@ -337,7 +341,10 @@ export class CompareService {
     };
     // Without the agenda nothing can be attributed; say so instead of
     // showing every print as unreserved.
-    if (!reservations) return { ...base, available: false, users: [], unattributed: { prints: 0, grams: 0, list: [] }, totals: null };
+    const allTime = () => (this.usageLog ? this.usageLog.totals() : null);
+    if (!reservations) {
+      return { ...base, available: false, users: [], unattributed: { prints: 0, grams: 0, list: [] }, totals: null, allTime: allTime() };
+    }
 
     const names = new Map((devices || []).map((d) => [d.dev_id, d.name]));
     const prints = tasks
@@ -358,11 +365,67 @@ export class CompareService {
     });
     const usage = attributeUsage({ comparison, rangeStart, rangeEnd, now });
     if (this.usageLog) {
-      const records = [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
-        .map((r) => ({ ...r, counted: Boolean(r.reservation) && !r.excluded }));
-      await this.usageLog.save(records, { at: now, recalculation: recalculate ? { from, to } : null });
+      await this.usageLog.save(usageRecords(usage), { at: now, recalculation: recalculate ? { from, to } : null });
       base.sources.usageLog = this.usageLog.stats();
     }
-    return { ...base, available: true, recalculated: recalculate, ...usage };
+    return { ...base, available: true, recalculated: recalculate, ...usage, allTime: allTime() };
+  }
+
+  // Recalculates the usage of every print from saved data only: the print
+  // log and the saved reservations. Nothing is read from Design Hub or
+  // Bambu. Prints that started on a day with no saved reservations are
+  // left as they were.
+  async recalculateTotal() {
+    if (!this.usageLog || !this.reservationArchive) {
+      throw new SourceError('Usage is not being saved, so there is no total to recalculate.', { code: 'not_saved' });
+    }
+    const zone = this.config.timezone;
+    const now = this.now();
+    const dates = this.reservationArchive.dates();
+    if (!dates.length) {
+      throw new SourceError('No reservations are saved yet.', {
+        code: 'nothing_saved', hint: 'Load or recalculate a date range first; its reservations are saved as they are read.',
+      });
+    }
+    const savedDays = new Set(dates);
+    const rangeStart = Date.parse(dayBounds(dates[0], zone).start);
+    const rangeEnd = Date.parse(dayBounds(dates.at(-1), zone).end);
+    const byId = new Map();
+    for (const d of dates) for (const r of this.reservationArchive.get(d).reservations) byId.set(r.id, r);
+
+    let tasks;
+    let confirmed;
+    if (this.printLog) {
+      tasks = this.printLog.query(-Infinity, Infinity);
+      confirmed = this.lastFetch && now - this.lastFetch.at <= FRESH_MS ? this.lastFetch.ids : new Set();
+    } else {
+      // Demo mode keeps no print log; its generated prints stand in for it.
+      tasks = (await this.bambu.getTasks({ sinceMs: rangeStart, untilMs: Math.min(rangeEnd, now + 1) })).tasks;
+      confirmed = new Set(tasks.map((t) => String(t.id)));
+    }
+    const devices = this.lastFetch?.devices || null;
+    const names = new Map((devices || []).map((d) => [d.dev_id, d.name]));
+    const all = tasks
+      .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
+      .filter(Boolean);
+    const prints = all.filter((p) => savedDays.has(todayIn(zone, new Date(p.start))));
+
+    const graceMs = this.config.graceMinutes * 60000;
+    const comparison = buildComparison({
+      day: { date: dates[0], start: new Date(rangeStart).toISOString(), end: new Date(rangeEnd + graceMs).toISOString(), timezone: zone },
+      now,
+      reservations: [...byId.values()],
+      prints,
+      devices,
+      printerOrder: this.config.printerOrder,
+      printerMap: this.config.printerMap,
+      graceMinutes: this.config.graceMinutes,
+    });
+    const records = usageRecords(attributeUsage({ comparison, rangeStart, rangeEnd, now }));
+    await this.usageLog.save(records, {
+      at: now,
+      totalRecalculation: { from: dates[0], to: dates.at(-1), prints: records.length, skippedPrints: all.length - prints.length },
+    });
+    return { allTime: this.usageLog.totals(), usageLog: this.usageLog.stats() };
   }
 }

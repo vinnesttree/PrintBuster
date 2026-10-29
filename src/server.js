@@ -27,6 +27,9 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   if (config.demo) {
     designhub = new DemoDesignHub({ zone: config.timezone, now });
     bambu = new DemoBambu({ zone: config.timezone, now });
+    // Demo mode keeps its saved reservations and usage in memory only.
+    reservationArchive = new ReservationArchive(null);
+    usageLog = new UsageLog(null);
   } else {
     designhub = config.designhub.configured
       ? new DesignHubClient(config.designhub, { zone: config.timezone, fetch })
@@ -102,14 +105,21 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     res.json(await service.usage(from, to, { force: req.query.refresh === '1' }));
   });
 
+  // The recalculations are JSON only, so another site can't trigger them
+  // with a plain form post.
+  const jsonOnly = (req, res, next) => (req.is('application/json')
+    ? next()
+    : res.status(415).json({ error: { message: 'Send the request as JSON.', code: 'bad_type' } }));
+
   // Re-reads the range's reservations from Design Hub (saved past days too),
-  // recalculates usage and saves both. JSON only, so another site can't
-  // trigger it with a plain form post.
-  app.post('/api/usage/recalculate', async (req, res) => {
-    if (!req.is('application/json')) {
-      return res.status(415).json({ error: { message: 'Send JSON: {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}', code: 'bad_type' } });
-    }
+  // recalculates usage and saves both.
+  app.post('/api/usage/recalculate', jsonOnly, async (req, res) => {
     res.json(await service.usage(req.body?.from, req.body?.to, { force: true, recalculate: true }));
+  });
+
+  // Recalculates every saved print's usage from saved data only.
+  app.post('/api/usage/recalculate-total', jsonOnly, async (req, res) => {
+    res.json(await service.recalculateTotal());
   });
 
   app.post('/api/bambu/code', async (req, res) => {

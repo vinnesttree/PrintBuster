@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
-const state = { config: null, data: null, sort: { key: 'grams', dir: 'desc' }, expanded: new Set(), loading: false };
+const state = { config: null, data: null, allTime: new Map(), sort: { key: 'grams', dir: 'desc' }, expanded: new Set(), loading: false };
 
 // ---------------------------------------------------------------- helpers
 
@@ -31,6 +31,7 @@ const fmtSpan = (start, end) => `${fmtDateTime(start)} – ${localDay(start) ===
 const fmtDay = (iso) => new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })
   .format(new Date(`${iso}T12:00:00Z`));
 const pct = (f) => `${Math.round(f * 100)}%`;
+const fmtDate = (iso) => fmt({ month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(iso));
 
 function fmtGrams(g) {
   if (g == null) return '—';
@@ -123,11 +124,17 @@ function renderTiles() {
     el('div', { className: 'tile-value', text: value }),
     el('div', { className: 'tile-note', text: note }));
   const printing = state.data.users.filter((u) => !u.isEvent && u.prints > 0).length;
+  const all = state.data.allTime;
+  const totalNote = !all ? 'Not saved in this mode'
+    : !all.since ? 'Nothing saved yet'
+      : [`${all.countedPrints} prints since ${fmtDate(all.since)}`,
+        all.lastTotalRecalculation ? `recalculated ${fmtDateTime(all.lastTotalRecalculation.at)}` : null].filter(Boolean).join(' · ');
   $('#tiles').replaceChildren(
     tile('icon-ok', '✓', 'Filament counted', v(fmtGrams(t?.countedGrams)), t ? `${t.countedPrints} prints inside reservations` : 'Needs the Design Hub agenda'),
     tile('icon-info', 'i', 'Members', v(String(t?.users)), t ? `${printing} printed something` : ''),
     tile('icon-partial', '!', 'Not counted', v(fmtGrams(t?.excludedGrams)), t ? `${t.excludedPrints} prints more than half outside their reservation` : ''),
     tile('icon-bad', '✕', 'No reservation', v(fmtGrams(t?.unattributedGrams)), t ? `${t.unattributedPrints} prints not charged to anyone` : ''),
+    tile('icon-info', 'Σ', 'All-time total', all?.since ? fmtGrams(all.countedGrams) : '—', totalNote),
   );
 }
 
@@ -142,6 +149,9 @@ const METHOD = {
   'finish-unknown': () => 'Finish not recorded · full amount',
 };
 
+const totalFor = (u) => state.allTime.get(u.name);
+const sortValue = (u, key) => (key === 'total' ? totalFor(u)?.grams ?? 0 : u[key]);
+
 function visibleUsers() {
   const q = $('#search').value.trim().toLowerCase();
   const showEvents = $('#show-events').checked;
@@ -152,7 +162,7 @@ function visibleUsers() {
     .sort((a, b) => {
       const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
       if (key === 'name') return sign * byName;
-      return sign * (a[key] - b[key]) || byName;
+      return sign * (sortValue(a, key) - sortValue(b, key)) || byName;
     });
 }
 
@@ -250,12 +260,13 @@ function renderUsers() {
       el('td', { className: 'num usage-cell' },
         el('span', { className: 'usage-bar', 'aria-hidden': 'true' }, el('span', { style: { width: `${(u.grams / maxGrams) * 100}%` } })),
         el('span', { className: 'usage-val', text: fmtGrams(u.grams) })),
+      el('td', { className: 'num all-time', title: totalFor(u) ? `${plural(totalFor(u).prints, 'print')} counted in all saved data` : null, text: fmtGrams(totalFor(u)?.grams ?? 0) }),
       el('td', { className: 'materials', text: materialsText(u.materials) }),
       el('td', { className: 'num' }, u.excludedPrints
         ? el('span', { className: 'status' }, icon('icon-partial', '!'), `${u.excludedPrints} · ${fmtGrams(u.excludedGrams)}`)
         : el('span', { className: 'muted', text: '—' }))));
     if (open) {
-      rows.push(el('tr', { className: 'detail-row', id: detailId }, el('td', { colspan: '6' }, printRows(u))));
+      rows.push(el('tr', { className: 'detail-row', id: detailId }, el('td', { colspan: '7' }, printRows(u))));
     }
   }
 
@@ -265,6 +276,7 @@ function renderUsers() {
       el('th', { scope: 'col', className: 'num col-res', text: 'Reservations' }),
       sortHeader('Prints', 'prints', 'num'),
       sortHeader('Filament used', 'grams', 'num'),
+      sortHeader('All time', 'total', 'num'),
       el('th', { scope: 'col', text: 'Materials' }),
       el('th', { scope: 'col', className: 'num', text: 'Not counted' }))),
     el('tbody', {}, rows)));
@@ -286,6 +298,7 @@ function renderUnattributed() {
 }
 
 function render() {
+  state.allTime = new Map((state.data.allTime?.members || []).map((m) => [m.name, m]));
   $('#demo-badge').hidden = !state.data.demo;
   $('#grace-min').textContent = String(state.data.graceMinutes);
   renderBanners();
@@ -294,7 +307,7 @@ function render() {
   renderUnattributed();
   const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   $('#updated').textContent = state.data.recalculated
-    ? `Recalculated${state.data.sources.usageLog ? ' and saved' : ''} ${time}`
+    ? `Recalculated${state.data.demo ? '' : ' and saved'} ${time}`
     : `Updated ${time}`;
 }
 
@@ -319,8 +332,7 @@ async function load({ force = false, recalculate = false } = {}) {
   const seq = ++loadSeq;
   state.loading = true;
   $('#users').classList.add('is-loading');
-  $('#refresh').disabled = true;
-  $('#recalc').disabled = true;
+  setBusy(true);
   $('#updated').textContent = recalculate ? 'Recalculating… re-reading every day from Design Hub' : 'Loading…';
   try {
     const res = recalculate
@@ -339,9 +351,37 @@ async function load({ force = false, recalculate = false } = {}) {
     if (seq === loadSeq) {
       state.loading = false;
       $('#users').classList.remove('is-loading');
-      $('#refresh').disabled = false;
-      $('#recalc').disabled = false;
+      setBusy(false);
     }
+  }
+}
+
+function setBusy(busy) {
+  for (const id of ['#refresh', '#recalc', '#recalc-total']) $(id).disabled = busy;
+}
+
+// Recalculates all-time usage from saved data only; the range shown is
+// unchanged.
+async function recalculateTotal() {
+  if (!state.data) return;
+  const seq = ++loadSeq;
+  setBusy(true);
+  $('#updated').textContent = 'Recalculating the all-time total from saved data…';
+  try {
+    const res = await fetch('/api/usage/recalculate-total', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const json = await res.json();
+    if (!res.ok) throw new Error([json.error?.message, json.error?.hint].filter(Boolean).join(' ') || `HTTP ${res.status}`);
+    if (seq !== loadSeq) return;
+    state.data.allTime = json.allTime;
+    render();
+    const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    $('#updated').textContent = `Total recalculated from saved data ${time}`;
+  } catch (err) {
+    if (seq !== loadSeq) return;
+    $('#banners').replaceChildren(banner('icon-bad', '✕', 'Could not recalculate the all-time total', err.message));
+    $('#updated').textContent = '';
+  } finally {
+    if (seq === loadSeq) setBusy(false);
   }
 }
 
@@ -356,13 +396,14 @@ async function init() {
   $('#from').value = valid(params.get('from')) ? params.get('from') : shift($('#to').value, -29);
   $('#search').value = params.get('q') || '';
   const [key, dir] = (params.get('sort') || '').split('-');
-  if (['name', 'prints', 'grams'].includes(key) && ['asc', 'desc'].includes(dir)) state.sort = { key, dir };
+  if (['name', 'prints', 'grams', 'total'].includes(key) && ['asc', 'desc'].includes(dir)) state.sort = { key, dir };
 
   $('#controls').addEventListener('submit', (e) => e.preventDefault());
   $('#from').addEventListener('change', () => load());
   $('#to').addEventListener('change', () => load());
   $('#refresh').addEventListener('click', () => load({ force: true }));
   $('#recalc').addEventListener('click', () => load({ recalculate: true }));
+  $('#recalc-total').addEventListener('click', recalculateTotal);
   for (const btn of document.querySelectorAll('.presets [data-days]')) {
     btn.addEventListener('click', () => {
       $('#to').value = isoToday();

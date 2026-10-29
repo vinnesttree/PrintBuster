@@ -83,8 +83,36 @@ describe('UsageLog', () => {
     assert.deepEqual([again.get('1').usedGrams, again.get('1').calculatedAt], [10, new Date(AT).toISOString()]);
     assert.deepEqual([again.get('2').usedGrams, again.get('2').calculatedAt], [25, new Date(AT + 60000).toISOString()]);
     assert.deepEqual(again.stats(), {
-      prints: 2, writeError: null,
+      prints: 2, writeError: null, lastTotalRecalculation: null,
       lastRecalculation: { at: new Date(AT + 60000).toISOString(), from: '2026-10-27', to: '2026-10-27' },
     });
+  });
+
+  it('sums all-time totals per member from the saved results', () => {
+    const log = new UsageLog(null);
+    log.save([
+      { ...rec('1', 10), start: '2026-10-20T14:00:00.000Z' },
+      rec('2', 20.05),
+      { ...rec('3', 7), counted: false },
+      { id: '4', start: '2026-10-27T18:00:00.000Z', usedGrams: 5, counted: false, reservation: null },
+      { id: '5', start: '2026-10-27T19:00:00.000Z', usedGrams: 3, counted: true, reservation: { id: 'r9', name: 'Event: Open house', isEvent: true } },
+    ], { at: AT, totalRecalculation: { from: '2026-10-20', to: '2026-10-27', prints: 5, skippedPrints: 0 } });
+    const t = log.totals();
+    assert.deepEqual(t.members, [
+      { name: 'Jane Doe', isEvent: false, prints: 2, grams: 30.1, excludedPrints: 1, excludedGrams: 7 },
+      { name: 'Event: Open house', isEvent: true, prints: 1, grams: 3, excludedPrints: 0, excludedGrams: 0 },
+    ]);
+    assert.deepEqual(
+      [t.since, t.countedPrints, t.countedGrams, t.excludedPrints, t.excludedGrams, t.unattributedPrints, t.unattributedGrams],
+      ['2026-10-20T14:00:00.000Z', 3, 33.1, 1, 7, 1, 5],
+    );
+    assert.equal(t.lastTotalRecalculation.from, '2026-10-20');
+  });
+
+  it('keeps everything in memory when it has no file', async () => {
+    const log = new UsageLog(null);
+    await log.load();
+    await log.save([rec('1', 10)], { at: AT });
+    assert.deepEqual([log.get('1').usedGrams, log.stats().writeError], [10, null]);
   });
 });
