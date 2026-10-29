@@ -10,13 +10,15 @@ import { createMockUpstream, task } from './helpers/mock-upstream.js';
 const servers = [];
 after(() => servers.forEach((s) => s.close()));
 
-async function start(env, opts) {
+// Like the real server, collects once at startup unless `collect: false`.
+async function start(env, { collect = true, ...opts } = {}) {
   // Keep the saved reservations in the test's own folder, never in data/.
   if (env.PRINT_LOG_PATH && !env.RESERVATION_LOG_PATH) {
     const dir = path.dirname(env.PRINT_LOG_PATH);
     env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json') };
   }
   const app = await createApp(loadConfig(env, ['node', 'server.js']), opts);
+  if (collect) await app.locals.collector.runNow();
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   servers.push(server);
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -175,11 +177,13 @@ describe('live mode', () => {
     clock += 20000;
     await api.get('/api/compare?date=2026-10-27&refresh=1');
     assert.ok(up.calls.length > before);
-    // Older than the 2-minute active interval: the next request collects.
+    // However old the data, a page load only reads what is saved; the
+    // server's schedule and Refresh are what collect.
     const afterRefresh = up.calls.length;
-    clock += 3 * 60000;
+    clock += 60 * 60000;
     await api.get('/api/compare?date=2026-10-27');
-    assert.ok(up.calls.length > afterRefresh);
+    await api.get('/api/usage?from=2026-10-26&to=2026-10-27');
+    assert.equal(up.calls.length, afterRefresh);
   });
 
   it('shows the other source when one fails', async () => {
@@ -284,7 +288,11 @@ describe('print log', () => {
     const { up, env } = await setup();
     const clock = at('2026-10-26T21:30:00-05:00');
     const api = await start(env, { fetch: up.fetch, now: () => clock });
-    const data = await (await api.get('/api/compare?date=2026-10-20')).json();
+    // Oct 20 isn't saved; a page load doesn't read Design Hub, Refresh does.
+    const unsaved = await (await api.get('/api/compare?date=2026-10-20')).json();
+    assert.deepEqual([unsaved.sources.designhub.ok, unsaved.sources.designhub.error.code], [false, 'not_saved']);
+    assert.match(unsaved.sources.designhub.error.hint, /Refresh/);
+    const data = await (await api.get('/api/compare?date=2026-10-20&refresh=1')).json();
     assert.equal(data.printsAvailable, false);
     assert.deepEqual(data.printGaps, [{ start: '2026-10-20T05:00:00.000Z', end: '2026-10-21T05:00:00.000Z' }]);
     assert.equal(data.reservations.length, 1);
@@ -377,7 +385,8 @@ describe('filament usage by user', () => {
     );
     const total = await api.post('/api/usage/recalculate-total', {});
     assert.equal(total.status, 200);
-    assert.equal((await total.json()).allTime.lastTotalRecalculation.to, '2026-10-27');
+    // The server's collection keeps tomorrow's agenda too.
+    assert.equal((await total.json()).allTime.lastTotalRecalculation.to, '2026-10-28');
 
     for (const [q, msg] of [['from=2026-10-27&to=2026-10-01', /after the end/], ['from=2026-01-01&to=2026-10-27', /at most 92/], ['from=nope', /YYYY-MM-DD/]]) {
       const r = await api.get(`/api/usage?${q}`);
@@ -386,7 +395,7 @@ describe('filament usage by user', () => {
     }
   });
 
-  async function live(hubOverrides = {}, dir = null) {
+  async function live(hubOverrides = {}, dir = null, startOpts = {}) {
     dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-'));
     const up = createMockUpstream({
       hub: {
@@ -407,7 +416,7 @@ describe('filament usage by user', () => {
     const api = await start({
       DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
       BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
-    }, { fetch: up.fetch, now: () => NOW });
+    }, { fetch: up.fetch, now: () => NOW, ...startOpts });
     return { api, up, dir };
   }
 
@@ -420,21 +429,20 @@ describe('filament usage by user', () => {
     assert.deepEqual(jane.list.map((p) => [p.method, p.usedGrams]), [['finished', 100], ['cancelled', 20]]);
     assert.deepEqual([data.unattributed.prints, data.unattributed.grams], [1, 40]);
 
-    // One agenda page per day: the day before and after too (bookings from
-    // the evening before, or starting just after the grace period). The
-    // server's collection reads yesterday and today; the page reads the rest.
+    // Only the server's collection read Design Hub: yesterday, today and
+    // tomorrow, then the day before the print log began. The page read none.
     const agendaCalls = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
-    assert.deepEqual(agendaCalls(), ['2026-10-26', '2026-10-27', '2026-10-25']);
-    // Past days are final and saved; today comes from the collection.
+    assert.deepEqual(agendaCalls(), ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-25']);
+    // Refresh inside 15 seconds of a collection, with every day saved, reads nothing.
     await api.get('/api/usage?from=2026-10-26&to=2026-10-26&refresh=1');
-    assert.equal(agendaCalls().length, 3);
+    assert.equal(agendaCalls().length, 4);
   });
 
   it('keeps reservations on disk and uses them after a restart when Design Hub is down', async () => {
     const { api, dir } = await live();
     const before = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
     const saved = JSON.parse(await fs.readFile(path.join(dir, 'reservations.json'), 'utf8'));
-    assert.deepEqual(Object.entries(saved.days).map(([d, v]) => [d, v.final]), [['2026-10-25', true], ['2026-10-26', true], ['2026-10-27', false]]);
+    assert.deepEqual(Object.entries(saved.days).map(([d, v]) => [d, v.final]), [['2026-10-25', true], ['2026-10-26', true], ['2026-10-27', false], ['2026-10-28', false]]);
     assert.equal(saved.days['2026-10-26'].reservations[0].name, 'Jane Doe');
 
     // A new app on the same folder, with the Design Hub login now failing.
@@ -501,11 +509,12 @@ describe('filament usage by user', () => {
   });
 
   it('recalculates the all-time total from saved data only', async () => {
-    const { api, up } = await live();
+    const { api, up } = await live({}, null, { collect: false });
     // Nothing saved yet.
     const empty = await api.post('/api/usage/recalculate-total', {});
     assert.equal(empty.status, 400);
     assert.match((await empty.json()).error.message, /No reservations are saved/);
+    await api.app.locals.collector.runNow();
 
     const first = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
     assert.deepEqual(first.allTime.members.map((m) => [m.name, m.prints, m.grams]), [['Jane Doe', 2, 120]]);
@@ -527,8 +536,26 @@ describe('filament usage by user', () => {
     assert.equal(up.calls.length, before, 'no Design Hub or Bambu requests');
     assert.deepEqual(allTime.members.map((m) => [m.name, m.prints, m.grams]), [['Jane Doe', 2, 120]]);
     assert.deepEqual(allTime.lastTotalRecalculation, {
-      at: new Date(NOW).toISOString(), from: '2026-10-25', to: '2026-10-27', prints: 3, skippedPrints: 1,
+      at: new Date(NOW).toISOString(), from: '2026-10-25', to: '2026-10-28', prints: 3, skippedPrints: 1,
     });
+  });
+
+  it('leaves out prints on days with no saved reservations, without asking Design Hub', async () => {
+    const { api, up } = await live();
+    await api.app.locals.service.printLog.record({
+      tasks: [task(9, 'D-ADA', '2026-10-22T12:00', '2026-10-22T13:00', { weight: 55 })], fetchedAt: NOW,
+    });
+    const before = up.calls.length;
+    const data = await (await api.get('/api/usage?from=2026-10-21&to=2026-10-26')).json();
+    assert.equal(up.calls.length, before);
+    assert.deepEqual(data.sources.designhub.missingDays, ['2026-10-21', '2026-10-22', '2026-10-23', '2026-10-24']);
+    assert.ok(!data.unattributed.list.some((p) => p.id === 'bb-9'), 'not counted as unreserved either');
+    assert.deepEqual(data.users.map((u) => [u.name, u.grams]), [['Jane Doe', 120]]);
+
+    // Refresh reads them.
+    const refreshed = await (await api.get('/api/usage?from=2026-10-21&to=2026-10-26&refresh=1')).json();
+    assert.deepEqual(refreshed.sources.designhub.missingDays, []);
+    assert.ok(refreshed.unattributed.list.some((p) => p.id === 'bb-9'));
   });
 
   it('rejects a recalculation without valid dates', async () => {
@@ -543,15 +570,17 @@ describe('filament usage by user', () => {
     const { service } = api.app.locals;
     // The print log started on Oct 20 (Chicago); yesterday is Oct 26.
     await service.printLog.record({ tasks: [task(9, 'D-ADA', '2026-10-20T12:00', '2026-10-20T13:00')], fetchedAt: Date.parse('2026-10-20T19:00:00Z') });
-    const agendaDates = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
+    // Startup's collection already saved Oct 25 (the day before the log
+    // began then) through tomorrow.
+    const startup = up.calls.length;
+    const agendaDates = () => up.calls.slice(startup).filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
     await service.archiveAgenda();
-    assert.deepEqual(agendaDates(), ['2026-10-26', '2026-10-25', '2026-10-24']);
+    assert.deepEqual(agendaDates(), ['2026-10-24', '2026-10-23', '2026-10-22']);
     await service.archiveAgenda();
-    await service.archiveAgenda();
-    assert.deepEqual(agendaDates().slice(3), ['2026-10-23', '2026-10-22', '2026-10-21', '2026-10-20', '2026-10-19']);
+    assert.deepEqual(agendaDates().slice(3), ['2026-10-21', '2026-10-20', '2026-10-19']);
     assert.ok(['2026-10-19', '2026-10-26'].every((d) => service.reservationArchive.get(d)?.final));
     await service.archiveAgenda();
-    assert.equal(agendaDates().length, 8, 'nothing left to save');
+    assert.equal(agendaDates().length, 6, 'nothing left to save');
   });
 
   it('attributes nothing when the agenda cannot be read', async () => {
@@ -598,7 +627,8 @@ describe('server-side collection and live updates', () => {
   }
 
   it('counts open pages and tells them when new data is in', async () => {
-    const api = await start({ DEMO_MODE: 'true', POLL_ACTIVE_MINUTES: '2', POLL_IDLE_MINUTES: '15' }, { now: () => NOW });
+    let clock = NOW;
+    const api = await start({ DEMO_MODE: 'true', POLL_ACTIVE_MINUTES: '2', POLL_IDLE_MINUTES: '15' }, { now: () => clock });
     const config = await (await api.get('/api/config')).json();
     assert.deepEqual([config.collector.viewers, config.collector.activeMinutes, config.collector.idleMinutes], [0, 2, 15]);
 
@@ -611,10 +641,11 @@ describe('server-side collection and live updates', () => {
     await viewersSoon(api, 2);
 
     // A collection (here started by Refresh) is announced to every page.
+    clock += 20000;
     await api.get('/api/compare?refresh=1');
     const updates = await Promise.all(next.map((n) => n()));
     assert.deepEqual(updates.map((u) => u.event), ['update', 'update']);
-    assert.equal(updates[0].data.lastRunAt, new Date(NOW).toISOString());
+    assert.equal(updates[0].data.lastRunAt, new Date(clock).toISOString());
 
     pages[0].abort();
     await viewersSoon(api, 1);

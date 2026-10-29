@@ -10,8 +10,6 @@ const PRINT_LOOKBACK_MS = 48 * 3600 * 1000;
 const FRESH_MS = 10 * 60 * 1000;
 // The usage page fetches one agenda page per day, so ranges are capped.
 export const MAX_USAGE_DAYS = 92;
-// Past days' agendas rarely change; keep them longer than today's.
-const PAST_DAY_TTL_MS = 10 * 60 * 1000;
 // Finished agenda days each collection saves, newest first.
 const ARCHIVE_DAYS_PER_POLL = 3;
 // The Refresh buttons start a new collection unless one ran this recently.
@@ -71,10 +69,11 @@ export class CompareService {
     this.collector = collector;
   }
 
-  // Brings collected data up to date if it is older than the collector's
-  // active interval, or `maxAgeMs`; any number of requests share one run.
-  async fresh(maxAgeMs) {
-    if (this.collector) await this.collector.ensureFresh(maxAgeMs);
+  // The Refresh buttons: collect now, unless a collection ran in the last
+  // few seconds; any number of presses share one run. Page loads never
+  // collect; they read what is saved.
+  async refreshNow() {
+    if (this.collector) await this.collector.ensureFresh(REFRESH_MIN_AGE_MS);
   }
 
   cached(key, fn, force, ttlMs = this.config.cacheSeconds * 1000) {
@@ -107,13 +106,15 @@ export class CompareService {
 
   // One server-side collection, run by the Collector: Bambu's devices and
   // recent prints into the print log (everything Bambu still has when the
-  // log is empty), yesterday's (until final) and today's agenda into the
-  // saved reservations, then a few finished days still missing a final copy.
+  // log is empty), yesterday's (until final), today's and tomorrow's agenda
+  // into the saved reservations, then a few finished days still missing a
+  // final copy.
   // Failures are recorded for the pages and logged once, not every run.
   async collect() {
     const now = this.now();
     const today = todayIn(this.config.timezone, new Date(now));
-    const days = [shiftDate(today, -1), today].filter((d) => !this.reservationArchive?.get(d)?.final);
+    const collectDays = [shiftDate(today, -1), today, shiftDate(today, 1)];
+    const days = collectDays.filter((d) => !this.reservationArchive?.get(d)?.final);
     const sinceMs = this.printLog && !this.printLog.coverage().length ? 0 : now - PRINT_LOOKBACK_MS;
     const [cloud, hub] = await Promise.allSettled([
       this.fetchBambu('bambu:collect', { sinceMs, untilMs: now, force: true }),
@@ -121,7 +122,7 @@ export class CompareService {
     ]);
     this.collected = {
       at: now,
-      days: new Set([shiftDate(today, -1), today]),
+      days: new Set(collectDays),
       bambu: cloud.status === 'fulfilled'
         ? { ok: true, complete: cloud.value.complete, deviceCount: cloud.value.devices.length }
         : { ok: false, error: cloud.reason },
@@ -150,21 +151,32 @@ export class CompareService {
     return { reservations, skipped };
   }
 
-  // One agenda day: from the archive once final (unless recalculating),
-  // from the server's collection for the days it keeps current, else read
-  // from Design Hub now, falling back to an earlier saved copy if that fails.
-  async agendaDay(date, { force = false, today, recalculate = false }) {
+  // One agenda day, from the saved reservations. Pages never make Design Hub
+  // requests: a day that isn't saved yet throws `not_saved` (or the error
+  // that kept the collection from saving it). Only Refresh (`force`) and
+  // Recalculate read Design Hub here, for days the server's collection
+  // doesn't keep current (Recalculate re-reads every day). Demo mode, whose
+  // agenda is generated locally, makes any day on request.
+  async agendaDay(date, { force = false, recalculate = false }) {
     const saved = this.reservationArchive?.get(date);
-    const fromSaved = (from, error) => ({ reservations: saved.reservations, skipped: saved.skipped || [], from, error });
+    const fromSaved = (from, error) => ({
+      reservations: saved.reservations, skipped: saved.skipped || [], fetchedAt: saved.fetchedAt, from, error,
+    });
     if (saved?.final && !recalculate) return fromSaved('archive');
     if (saved && !recalculate && this.collected?.days.has(date)) {
       return this.collected.designhub.ok ? fromSaved('collected') : fromSaved('stale', this.collected.designhub.error);
     }
+    if (!force && !recalculate && !this.config.demo) {
+      if (saved) return fromSaved('saved');
+      if (this.collected?.days.has(date) && !this.collected.designhub.ok) throw this.collected.designhub.error;
+      throw new SourceError(`The reservations for ${date} haven't been saved yet.`, {
+        code: 'not_saved', hint: 'Press Refresh to read them from Design Hub.',
+      });
+    }
     try {
-      const day = await this.cached(
-        `hubday:${date}`, () => this.fetchAgendaDay(date), recalculate || (force && date >= today), date < today ? PAST_DAY_TTL_MS : undefined,
-      );
-      return { ...day, from: 'designhub' };
+      // Presses within a few seconds of each other share one read.
+      const day = await this.cached(`hubday:${date}`, () => this.fetchAgendaDay(date), recalculate, REFRESH_MIN_AGE_MS);
+      return { ...day, fetchedAt: new Date(this.now()).toISOString(), from: 'designhub' };
     } catch (err) {
       if (saved) return fromSaved('stale', err);
       throw err;
@@ -205,18 +217,17 @@ export class CompareService {
   }
 
   async compare(isoDate, { force = false } = {}) {
-    await this.fresh(force ? REFRESH_MIN_AGE_MS : undefined);
+    if (force) await this.refreshNow();
     const day = dayBounds(isoDate, this.config.timezone);
     const dayStart = Date.parse(day.start);
     const sinceMs = dayStart - PRINT_LOOKBACK_MS;
     const untilMs = Date.parse(day.end);
-    const today = todayIn(this.config.timezone, new Date(this.now()));
 
     // This day's agenda page plus the day before, for bookings that started
     // the previous evening.
     const hubDays = [shiftDate(isoDate, -1), isoDate];
     const [hub, cloud] = await Promise.all([
-      Promise.all(hubDays.map((d) => this.agendaDay(d, { force, today })))
+      Promise.all(hubDays.map((d) => this.agendaDay(d, { force })))
         .then((got) => ({ ok: true, got }), (error) => ({ ok: false, error })),
       this.bambuFor(`bambu:${isoDate}`, { sinceMs, untilMs, force }),
     ]);
@@ -279,7 +290,14 @@ export class CompareService {
     const stale = hub.ok ? hub.got.find((d) => d.from === 'stale') : null;
     result.sources = {
       designhub: hub.ok
-        ? { ok: true, skippedRows: hub.got[1].skipped, ...(stale ? { stale: true, error: describeError(stale.error) } : {}) }
+        ? {
+          ok: true,
+          skippedRows: hub.got[1].skipped,
+          // When this day's reservations were saved, for days the server's
+          // collection doesn't keep current.
+          savedAt: hub.got[1].from === 'saved' ? hub.got[1].fetchedAt : null,
+          ...(stale ? { stale: true, error: describeError(stale.error) } : {}),
+        }
         : { ok: false, error: describeError(hub.error) },
       bambu: {
         ...(cloudOk
@@ -305,7 +323,7 @@ export class CompareService {
     if (daysBetween(from, to) + 1 > MAX_USAGE_DAYS) {
       throw new SourceError(`Pick at most ${MAX_USAGE_DAYS} days.`, { code: 'bad_range' });
     }
-    await this.fresh(force ? REFRESH_MIN_AGE_MS : undefined);
+    if (force) await this.refreshNow();
 
     const now = this.now();
     const today = todayIn(zone, new Date(now));
@@ -318,19 +336,28 @@ export class CompareService {
     const graceMs = this.config.graceMinutes * 60000;
     const lastDay = rangeEnd - graceMs <= now ? shiftDate(to, 1) : to < today ? to : today;
     const days = shiftDate(from, -1) <= lastDay ? dateList(shiftDate(from, -1), lastDay) : [];
+    // Days in the range with no saved reservations (not read: pages only
+    // read saved data; Refresh reads them) leave their prints out.
     let reservations = null;
     let hubError = null;
-    const daysFrom = { designhub: 0, archive: 0, stale: 0, collected: 0 };
-    try {
-      const perDay = await mapLimit(days, 2, (d) => this.agendaDay(d, { force, today, recalculate }));
-      const byId = new Map();
-      for (const day of perDay) {
-        daysFrom[day.from]++;
-        for (const r of day.reservations) byId.set(r.id, r);
+    const daysFrom = { designhub: 0, archive: 0, stale: 0, collected: 0, saved: 0 };
+    const missingDays = [];
+    const perDay = await mapLimit(days, 2, (d) => this.agendaDay(d, { force, recalculate })
+      .catch((error) => ({ missing: true, error })));
+    const byId = new Map();
+    perDay.forEach((day, i) => {
+      if (day.missing) {
+        if (days[i] >= from && days[i] <= to) missingDays.push(days[i]);
+        hubError ??= day.error;
+        return;
       }
+      daysFrom[day.from]++;
+      for (const r of day.reservations) byId.set(r.id, r);
+    });
+    const inRange = days.filter((d) => d >= from && d <= to);
+    if (missingDays.length < inRange.length) {
       reservations = [...byId.values()];
-    } catch (err) {
-      hubError = err;
+      hubError = null;
     }
 
     // Prints come from the print log, which the server's collection keeps
@@ -382,7 +409,10 @@ export class CompareService {
       sources: {
         designhub: hubError
           ? { ok: false, error: describeError(hubError) }
-          : { ok: true, days: days.length, savedDays: daysFrom.archive, collectedDays: daysFrom.collected, staleDays: daysFrom.stale },
+          : {
+            ok: true, days: days.length, savedDays: daysFrom.archive + daysFrom.saved, collectedDays: daysFrom.collected,
+            staleDays: daysFrom.stale, missingDays,
+          },
         reservationArchive: this.reservationArchive ? this.reservationArchive.stats() : null,
         usageLog: this.usageLog ? this.usageLog.stats() : null,
         bambu: {
@@ -400,9 +430,10 @@ export class CompareService {
     }
 
     const names = new Map((devices || []).map((d) => [d.dev_id, d.name]));
+    const missing = new Set(missingDays);
     const prints = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
-      .filter(Boolean);
+      .filter((p) => p && !missing.has(todayIn(zone, new Date(p.start))));
     // Runs past the range by the grace period, for bookings just after it
     // that a print in the range started in the grace period of.
     const comparison = buildComparison({

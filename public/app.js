@@ -484,6 +484,11 @@ function renderBanners() {
       list.push(bambuCodeForm(code === 'bambu_tfa_required' ? 'tfa' : 'verifyCode', src.error.message));
       continue;
     }
+    // Pages show only saved data; this day hasn't been saved yet.
+    if (code === 'not_saved') {
+      list.push(banner('icon-info', 'i', 'Reservations for this day aren\u2019t saved yet', [src.error.message, src.error.hint].filter(Boolean).join(' ')));
+      continue;
+    }
     list.push(banner('icon-bad', '✕', `${names[key]} data unavailable`,
       [src.error.message, src.error.hint, key === 'bambu' && printsAvailable && 'Showing prints saved in the print log.']
         .filter(Boolean).join(' ')));
@@ -495,6 +500,10 @@ function renderBanners() {
   if (sources.bambu.ok && !sources.bambu.complete) {
     list.push(banner('icon-partial', '!', 'Bambu print history may be incomplete',
       'The task list ran out of pages before reaching this day. Increase BAMBU_MAX_TASK_PAGES in .env.'));
+  }
+  if (sources.designhub.ok && sources.designhub.savedAt) {
+    list.push(banner('icon-info', 'i', `Reservations as saved ${fmtWhen(ms(sources.designhub.savedAt))}`,
+      'The server keeps yesterday, today and tomorrow up to date; other days show what was saved. Press Refresh to read this day again.'));
   }
   if (sources.designhub.ok && sources.designhub.stale) {
     const e = sources.designhub.error;

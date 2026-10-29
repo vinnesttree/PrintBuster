@@ -95,7 +95,7 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. With Docker Compose, these choose where the container is published. |
 | `APP_USERNAME`, `APP_PASSWORD` | Optional basic-auth login for the PrintBuster page. Set these before sharing the page on the network, because it shows member names. |
 | `POLL_ACTIVE_MINUTES`, `POLL_IDLE_MINUTES` | How often the server [collects data](#data-collection) from Design Hub and Bambu: every `POLL_ACTIVE_MINUTES` (default 2) while anyone has a page open, every `POLL_IDLE_MINUTES` (default 15) while nobody does. Decimals are allowed. `0` turns that schedule off. `BAMBU_POLL_MINUTES` still works as the older name for `POLL_IDLE_MINUTES`. |
-| `CACHE_SECONDS` | How long an agenda day that the collection doesn't cover (such as a future date someone looks at) is reused before Design Hub is asked again. Default 60. |
+| `CACHE_SECONDS` | How long demo mode reuses its generated prints. Default 60. Live data is never re-read on page loads (see [data collection](#data-collection)). |
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
 | `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
@@ -170,16 +170,24 @@ The server, not the browser, fetches data from Design Hub and Bambu, on its own 
 - **Every 2 minutes while anyone has a page open** (`POLL_ACTIVE_MINUTES`), whether that's the waterfall or the usage page, in any number of browsers.
 - **Every 15 minutes while nobody does** (`POLL_IDLE_MINUTES`), so the print log and saved reservations keep filling with no one watching.
 
-Each collection reads Bambu's printers and recent prints into the print log, and yesterday's (until it's final) and today's agenda into the saved reservations. It also saves a few finished days that are still missing.
+Each collection reads Bambu's printers and recent prints into the print log. It reads yesterday's (until it's final), today's and tomorrow's agenda into the saved reservations. It also saves a few finished days that are still missing, back to the day before the print log began.
 
-Pages never ask Design Hub or Bambu themselves. They read what the server collected, so ten viewers cause no more requests than one. How it fits together:
+**Pages only ever read saved data:** the print log, the saved reservations and usage, and what the last collection found. Loading or reloading a page, changing the date or range, and the live updates never make a request to Design Hub or Bambu, so ten viewers cause no more requests than one. Only these do:
+
+- the server's schedule;
+- **Refresh**;
+- **Recalculate** on the usage page, which re-reads its range;
+- signing in to Bambu with an emailed code.
+
+How it fits together:
 
 - **How the server knows a page is open.** While a page is visible, it holds a connection to `/api/events`. A page in a background tab or a minimized window lets go of it, and so stops counting as open.
 - **How pages learn about new data.** After each collection the server sends an update over that connection, and every open page redraws. The waterfall's **Live updates** box turns this off for that page.
-- **When the first page opens.** If the data is more than 2 minutes old, the server collects right away.
-- **Refresh.** It starts a collection, unless one ran in the last 15 seconds.
+- **When the first page opens.** The server switches to the 2-minute schedule. If its last collection was more than 2 minutes ago, the next one is already due and runs at once.
+- **Refresh.** It starts a collection, unless one ran in the last 15 seconds, and reads any day on screen that isn't saved.
 - **The status line.** "Checked 7:58 PM" shows when the server last collected. Hover over it for the schedule and how many pages are open.
-- **Dates outside the collection.** Viewing a future date, or a past day that was never saved, reads that agenda page from Design Hub when asked, and keeps it for `CACHE_SECONDS`.
+- **Days that aren't saved.** A future date beyond tomorrow, or a past day from before the print log, shows "Reservations for this day aren't saved yet" until someone presses Refresh. The usage page lists any unsaved days in its range and leaves their prints out, rather than counting them as unreserved.
+- **Saved days outside the collection.** A future day saved earlier by Refresh shows "Reservations as saved …" with the time it was read.
 - **Errors.** If a collection fails, the pages show the error, and the server logs it once rather than on every run.
 
 ### Design Hub

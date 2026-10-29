@@ -85,8 +85,17 @@ function renderBanners() {
   }
   if (!d.sources.designhub.ok) {
     const e = d.sources.designhub.error;
-    list.push(banner('icon-bad', '✕', 'Usage cannot be attributed without the Design Hub agenda',
-      [e.message, e.hint].filter(Boolean).join(' ')));
+    list.push(e.code === 'not_saved'
+      ? banner('icon-info', 'i', 'Reservations for this range aren\u2019t saved yet',
+        'The server saves each day as it collects. Press Refresh to read these days from Design Hub now.')
+      : banner('icon-bad', '✕', 'Usage cannot be attributed without the Design Hub agenda',
+        [e.message, e.hint].filter(Boolean).join(' ')));
+  }
+  const missing = d.sources.designhub.missingDays || [];
+  if (d.sources.designhub.ok && missing.length) {
+    const shown = missing.slice(0, 5).map(fmtDay).join(', ') + (missing.length > 5 ? ` and ${missing.length - 5} more` : '');
+    list.push(banner('icon-partial', '!', `Reservations for ${missing.length} day${missing.length === 1 ? '' : 's'} in this range aren\u2019t saved yet`,
+      `Prints on ${shown} aren't counted for anyone. Press Refresh to read those days from Design Hub.`));
   }
   if (d.sources.designhub.ok && d.sources.designhub.staleDays) {
     const n = d.sources.designhub.staleDays;
