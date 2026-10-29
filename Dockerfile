@@ -18,7 +18,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY public ./public
 
-# data/ holds the saved Bambu sign-in token; mount a volume here to keep it.
+# data/ holds the saved Bambu sign-in token, the print log, the saved
+# reservations and the calculated usage; mount a volume here to keep them.
 RUN mkdir -p data && chown node:node data
 USER node
 

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Filament usage · PrintBuster</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='9' height='4' rx='1' fill='%232a78d6'/%3E%3Crect x='5' y='9' width='10' height='4' rx='1' fill='%23d03b3b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="usage.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>PrintBuster</h1>
+      <p>Filament used per member, from prints inside their reservations</p>
+    </div>
+    <nav class="pagenav" aria-label="Pages">
+      <a href="./">Waterfall</a>
+      <a href="usage.html" aria-current="page">Filament usage</a>
+    </nav>
+    <div class="topbar-actions">
+      <span id="demo-badge" class="badge" hidden>Demo data</span>
+      <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Color theme">Theme: auto</button>
+    </div>
+  </header>
+
+  <main>
+    <form id="controls" class="controls" aria-label="Date range and search">
+      <div class="control-group">
+        <label class="field">From <input id="from" type="date" required></label>
+        <label class="field">To <input id="to" type="date" required></label>
+        <div class="presets" role="group" aria-label="Quick ranges">
+          <button class="btn" type="button" data-days="7">7 days</button>
+          <button class="btn" type="button" data-days="30">30 days</button>
+          <button class="btn" type="button" data-days="90">90 days</button>
+        </div>
+        <button id="refresh" class="btn" type="button" title="Re-read today's reservations and recent prints">Refresh</button>
+        <button id="recalc" class="btn" type="button" title="Re-read this range's reservations from Design Hub, recalculate its usage and save it">Recalculate</button>
+        <button id="recalc-total" class="btn" type="button" title="Recalculate all-time usage from saved prints and reservations only, without asking Design Hub">Recalculate total</button>
+      </div>
+      <div class="control-group">
+        <label class="sr-only" for="search">Search by name</label>
+        <input id="search" class="search" type="search" placeholder="Search by name" autocomplete="off">
+        <label class="check"><input id="show-events" type="checkbox" checked> Show event bookings</label>
+      </div>
+      <p id="updated" class="muted updated" aria-live="polite"></p>
+    </form>
+
+    <div id="banners" aria-live="polite"></div>
+
+    <section id="tiles" class="tiles" aria-label="Summary"></section>
+
+    <section class="card" aria-labelledby="users-title">
+      <div class="card-head">
+        <div>
+          <h2 id="users-title">Members</h2>
+          <p id="users-sub" class="muted"></p>
+        </div>
+        <p class="muted rules">
+          A print counts toward the reservation it started in, if it started in its first half or up to <span id="grace-min">15</span> minutes before it;
+          otherwise toward the reservation it overlaps most. A print more than half outside the member's reservation isn't counted.
+          Cancelled prints count for the share of their estimated time they ran.
+        </p>
+      </div>
+      <div id="users" class="table-wrap usage-wrap"></div>
+    </section>
+
+    <section class="card" aria-labelledby="alltime-title">
+      <div class="card-head">
+        <div>
+          <h2 id="alltime-title">All-time totals</h2>
+          <p id="alltime-sub" class="muted"></p>
+        </div>
+        <p class="muted rules">
+          Every member's usage over all saved data, under the same rules. It updates as date ranges are viewed or recalculated;
+          Recalculate total redoes every saved print.
+        </p>
+      </div>
+      <div id="alltime" class="table-wrap usage-wrap"></div>
+    </section>
+
+    <section class="card" aria-labelledby="unattributed-title">
+      <details id="unattributed-details">
+        <summary><h2 id="unattributed-title">Prints with no reservation</h2> <span id="unattributed-sum" class="muted"></span></summary>
+        <div id="unattributed" class="table-wrap"></div>
+      </details>
+    </section>
+  </main>
+</body>
+</html>

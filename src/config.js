@@ -133,6 +133,8 @@ export function loadConfig(env = process.env, argv = process.argv) {
     flagWeightGrams: num(env, 'FLAG_WEIGHT_GRAMS', 200, { min: 0 }),
     flagDurationHours: num(env, 'FLAG_DURATION_HOURS', 12, { min: 0 }),
     printLogPath: path.resolve(ROOT_DIR, str(env, 'PRINT_LOG_PATH', 'data/print-log.jsonl')),
+    reservationLogPath: path.resolve(ROOT_DIR, str(env, 'RESERVATION_LOG_PATH', 'data/reservations.json')),
+    usageLogPath: path.resolve(ROOT_DIR, str(env, 'USAGE_LOG_PATH', 'data/usage.json')),
     printerOrder: list(env, 'PRINTER_ORDER', DEFAULT_PRINTER_ORDER),
     printerMap: parsePrinterMap(str(env, 'PRINTER_MAP')),
     designhub,
