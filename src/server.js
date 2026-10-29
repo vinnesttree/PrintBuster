@@ -6,6 +6,7 @@ import { BambuClient } from './bambu.js';
 import { loadConfig, loadEnvFile, ROOT_DIR } from './config.js';
 import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
+import { Collector } from './collector.js';
 import { describeError, SourceError } from './errors.js';
 import { PrintLog } from './printlog.js';
 import { ReservationArchive } from './reservations.js';
@@ -15,7 +16,7 @@ import { isIsoDate, shiftDate, todayIn } from './time.js';
 
 function notConfigured(code, message, hint) {
   const fail = () => Promise.reject(new SourceError(message, { code, hint }));
-  return { getReservations: fail, getDay: fail, getDevices: fail, getTasks: fail };
+  return { getAgenda: fail, getReservations: fail, getDay: fail, getDevices: fail, getTasks: fail };
 }
 
 export async function createApp(config, { fetch = globalThis.fetch, now = () => Date.now() } = {}) {
@@ -47,9 +48,31 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   const service = new CompareService(config, { designhub, bambu, printLog, reservationArchive, usageLog, now });
   const bambuStatus = () => (bambu.status ? bambu.status() : { configured: false });
 
+  // Open pages hold an event stream while visible. That is how the server
+  // knows someone is watching, and how it tells them new data is in.
+  const streams = new Set();
+  const send = (res, event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const collector = new Collector({
+    run: () => service.collect(),
+    activeMs: config.pollActiveMinutes * 60000,
+    idleMs: config.pollIdleMinutes * 60000,
+    now,
+    onRun: () => {
+      const status = collector.status();
+      for (const res of streams) send(res, 'update', status);
+    },
+  });
+  service.attachCollector(collector);
+
   const app = express();
   app.disable('x-powered-by');
   app.locals.service = service;
+  app.locals.collector = collector;
+  // Ends every open event stream, so the server can close.
+  app.locals.closeStreams = () => {
+    for (const res of streams) res.end();
+    streams.clear();
+  };
 
   app.use((req, res, next) => {
     res.set({
@@ -87,6 +110,31 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
       flagDurationHours: config.flagDurationHours,
       designhub: { configured: config.demo || config.designhub.configured, baseUrl: config.designhub.baseUrl },
       bambu: bambuStatus(),
+      collector: collector.status(),
+    });
+  });
+
+  // An open page's event stream: counts as a viewer while it is connected,
+  // gets "hello" now and "update" after every collection.
+  app.get('/api/events', (req, res) => {
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      // Stops a reverse proxy such as nginx from holding events back.
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    const viewer = Symbol('viewer');
+    streams.add(res);
+    collector.addViewer(viewer);
+    send(res, 'hello', collector.status());
+    // Keeps idle connections from being dropped by proxies.
+    const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+    ping.unref();
+    req.on('close', () => {
+      clearInterval(ping);
+      streams.delete(res);
+      collector.removeViewer(viewer);
     });
   });
 
@@ -126,6 +174,8 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     if (!bambu.submitCode) return res.status(400).json({ error: { message: 'Not available in demo mode.' } });
     await bambu.submitCode(req.body?.code);
     service.clearCache('bambu:');
+    // Signed in: collect now rather than at the next scheduled run.
+    await collector.runNow();
     res.json({ bambu: bambuStatus() });
   });
 
@@ -164,12 +214,13 @@ async function main() {
       if (!config.bambu.configured) console.warn('Bambu credentials are missing; that source will show an error.');
     }
   });
-  if (!config.demo && config.bambu.configured) app.locals.service.startPolling(config.bambu.pollMinutes);
+  app.locals.collector.start();
 
   // As PID 1 in a container, Node gets no default SIGTERM handling, so
   // `docker stop` would otherwise wait out its timeout and kill the process.
   const shutdown = () => {
-    app.locals.service.stopPolling();
+    app.locals.collector.stop();
+    app.locals.closeStreams();
     // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
       await app.locals.service.printLog?.queue;

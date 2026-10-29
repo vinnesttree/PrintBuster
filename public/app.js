@@ -4,10 +4,9 @@ const LANE_H = 44;      // px per lane in a printer row
 const RES_TOP = 4;      // reservation band offset inside a lane
 const RES_H = 34;
 const PRINT_TOP = 24;   // print bar sits in the lower part of the band
-const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
 const $ = (sel) => document.querySelector(sel);
-const state = { config: null, data: null, date: null, loading: false, timer: null };
+const state = { config: null, data: null, date: null, loading: false };
 
 // ---------------------------------------------------------------- helpers
 
@@ -496,6 +495,11 @@ function renderBanners() {
       list.push(bambuCodeForm(code === 'bambu_tfa_required' ? 'tfa' : 'verifyCode', src.error.message));
       continue;
     }
+    // Pages show only saved data; this day hasn't been saved yet.
+    if (code === 'not_saved') {
+      list.push(banner('icon-info', 'i', 'Reservations for this day aren\u2019t saved yet', [src.error.message, src.error.hint].filter(Boolean).join(' ')));
+      continue;
+    }
     list.push(banner('icon-bad', '✕', `${names[key]} data unavailable`,
       [src.error.message, src.error.hint, key === 'bambu' && printsAvailable && 'Showing prints saved in the print log.']
         .filter(Boolean).join(' ')));
@@ -507,6 +511,15 @@ function renderBanners() {
   if (sources.bambu.ok && !sources.bambu.complete) {
     list.push(banner('icon-partial', '!', 'Bambu print history may be incomplete',
       'The task list ran out of pages before reaching this day. Increase BAMBU_MAX_TASK_PAGES in .env.'));
+  }
+  if (sources.designhub.ok && sources.designhub.savedAt) {
+    list.push(banner('icon-info', 'i', `Reservations as saved ${fmtWhen(ms(sources.designhub.savedAt))}`,
+      'The server keeps yesterday, today and tomorrow up to date; other days show what was saved. Press Refresh to read this day again.'));
+  }
+  if (sources.designhub.ok && sources.designhub.stale) {
+    const e = sources.designhub.error;
+    list.push(banner('icon-partial', '!', 'Design Hub could not be reached',
+      [`Showing reservations saved earlier, which may have changed since.`, e?.message].filter(Boolean).join(' ')));
   }
   if (sources.designhub.ok && sources.designhub.skippedRows?.length) {
     const rowsText = sources.designhub.skippedRows.map((r) => `${r.name || 'unnamed'} (${r.time || 'no time'})`).join('; ');
@@ -626,7 +639,9 @@ function render() {
   renderTiles();
   renderChart();
   renderTables();
-  $('#updated').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  $('#updated').textContent = collectedText(state.data.collector)
+    || `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  $('#updated').title = scheduleText(state.data.collector);
 }
 
 // ---------------------------------------------------------------- data
@@ -675,7 +690,8 @@ function shift(iso, days) {
   return d.toISOString().slice(0, 10);
 }
 
-// Refresh, following "today" past midnight if that is what is on screen.
+// Redraw after the server collected new data, following "today" past
+// midnight if that is what is on screen.
 async function autoRefresh() {
   if (document.visibilityState !== 'visible' || state.loading) return;
   const wasToday = state.date === state.config.today;
@@ -687,11 +703,6 @@ async function autoRefresh() {
   else load();
 }
 
-function scheduleAutoRefresh() {
-  clearInterval(state.timer);
-  if (!$('#auto-refresh').checked) return;
-  state.timer = setInterval(autoRefresh, AUTO_REFRESH_MS);
-}
 
 async function init() {
   applyTheme(storedTheme());
@@ -714,10 +725,10 @@ async function init() {
   $('#refresh').addEventListener('click', () => load({ force: true }));
   $('#only-bambu').addEventListener('change', renderChart);
   $('#show-idle').addEventListener('change', renderChart);
-  $('#auto-refresh').addEventListener('change', scheduleAutoRefresh);
-  document.addEventListener('visibilitychange', () => {
-    if ($('#auto-refresh').checked) autoRefresh();
-  });
+  $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked) autoRefresh(); });
+  // The server collects the data; the page redraws when it says there is
+  // something new.
+  liveUpdates(() => { if ($('#auto-refresh').checked) autoRefresh(); });
   window.addEventListener('scroll', hideTooltip, { passive: true });
 
   // Label fit and tick spacing depend on width only.
@@ -731,7 +742,6 @@ async function init() {
     resizeTimer = setTimeout(() => state.data && renderChart(), 120);
   }).observe($('#chart-scroll'));
 
-  scheduleAutoRefresh();
   setDate(start, { push: false });
 }
 

@@ -178,6 +178,10 @@ export class DemoDesignHub {
     return parseAgendaHtml(renderAgendaHtml(day, list, this.zone), { zone: this.zone, requestedDate: day }).reservations;
   }
 
+  async getAgenda(day) {
+    return { date: day, reservations: await this.getDay(day), skipped: [] };
+  }
+
   async getReservations(isoDate) {
     const byId = new Map();
     for (const day of [shiftDate(isoDate, -1), isoDate]) {
