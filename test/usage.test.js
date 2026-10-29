@@ -1,0 +1,166 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { buildComparison } from '../src/compare.js';
+import { attributeUsage, usedFraction } from '../src/usage.js';
+
+// Chicago wall clock on Oct 26-28 2026 (CDT, UTC-5) to ISO UTC.
+const t = (local) => new Date(Date.parse(`${local}:00-05:00`)).toISOString();
+const rangeStart = Date.parse('2026-10-27T00:00:00-05:00');
+const rangeEnd = Date.parse('2026-10-28T00:00:00-05:00');
+const NOW = Date.parse('2026-10-27T20:00:00-05:00');
+
+const devices = [
+  { dev_id: 'D-ADA', name: 'Ada' }, { dev_id: 'D-OHM', name: 'Ohm' }, { dev_id: 'D-ARC', name: 'Archimedes' },
+  { dev_id: 'D-EUL', name: 'Euler' }, { dev_id: 'D-FAR', name: 'Faraday' },
+];
+const res = (id, name, model, start, end) => ({
+  id, name, model, tool: 'Bambu Lab P1S', start: t(start), end: t(end), isEvent: /^event:/i.test(name), expiredMember: false,
+});
+const print = (id, deviceId, start, end, extra = {}) => ({
+  id, title: `Print ${id}`, deviceId, deviceName: deviceId, start: t(start), end: t(end),
+  status: 'finished', estimated: false, finishUnknown: false, estimateMinutes: null, weightGrams: 100, filaments: [], ...extra,
+});
+
+function usage(reservations, prints, { graceMinutes = 0, now = NOW } = {}) {
+  const comparison = buildComparison({
+    day: { date: '2026-10-27', start: new Date(rangeStart).toISOString(), end: new Date(rangeEnd).toISOString(), timezone: 'America/Chicago' },
+    now, reservations, prints, devices, printerOrder: [], graceMinutes,
+  });
+  const out = attributeUsage({ comparison, rangeStart, rangeEnd, now });
+  out.byName = Object.fromEntries(out.users.map((u) => [u.name, u]));
+  return out;
+}
+
+describe('usedFraction', () => {
+  it('charges a cancelled print for the share of its estimated time it ran', () => {
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:30', { status: 'failed', estimateMinutes: 120 });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 0.25, method: 'cancelled' });
+  });
+  it('never charges a cancelled print more than its full estimate', () => {
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T18:00', { status: 'failed', estimateMinutes: 120 });
+    assert.equal(usedFraction(p, NOW).fraction, 1);
+  });
+  it('charges the full estimate when there is no estimated time to compare against', () => {
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:30', { status: 'failed', estimateMinutes: null });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 1, method: 'cancelled-no-estimate' });
+  });
+  it('charges a running print for the time so far', () => {
+    const p = print('r', 'D-ADA', '2026-10-27T19:00', '2026-10-27T21:00', { status: 'running', estimated: true, estimateMinutes: 120 });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 0.5, method: 'running' });
+  });
+  it('charges the full estimate for finished prints and unknown finishes', () => {
+    assert.equal(usedFraction(print('f', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00'), NOW).method, 'finished');
+    const u = print('u', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00', { status: 'unknown', finishUnknown: true });
+    assert.deepEqual(usedFraction(u, NOW), { fraction: 1, method: 'finish-unknown' });
+  });
+});
+
+describe('attributeUsage', () => {
+  it('charges a finished print inside a reservation to its holder, by material', () => {
+    const out = usage(
+      [res('r1', 'Jane Doe', 'Ada', '2026-10-27T09:00', '2026-10-27T11:00')],
+      [print('p1', 'D-ADA', '2026-10-27T09:10', '2026-10-27T10:40', {
+        filaments: [{ type: 'PLA', grams: 60, color: '#FFFFFF' }, { type: 'PETG', grams: 40, color: '#00FF00' }],
+      })],
+    );
+    const jane = out.byName['Jane Doe'];
+    assert.equal(jane.grams, 100);
+    assert.equal(jane.prints, 1);
+    assert.equal(jane.reservations, 1);
+    assert.deepEqual(jane.materials, { PLA: 60, PETG: 40 });
+    assert.equal(jane.list[0].method, 'finished');
+  });
+
+  it('prorates a cancelled print and its materials', () => {
+    const out = usage(
+      [res('r1', 'Cara', 'Faraday', '2026-10-27T14:00', '2026-10-27T16:00')],
+      [print('p1', 'D-FAR', '2026-10-27T14:00', '2026-10-27T14:30', {
+        status: 'failed', estimateMinutes: 120, weightGrams: 80, filaments: [{ type: 'PLA', grams: 80, color: null }],
+      })],
+    );
+    const cara = out.byName.Cara;
+    assert.equal(cara.grams, 20);
+    assert.deepEqual(cara.materials, { PLA: 20 });
+    assert.deepEqual([cara.list[0].estimateGrams, cara.list[0].usedGrams, cara.list[0].fraction], [80, 20, 0.25]);
+  });
+
+  it('does not count a print more than half outside the reservation', () => {
+    const out = usage(
+      [res('r1', 'Bob', 'Ada', '2026-10-27T13:00', '2026-10-27T14:00')],
+      [print('p1', 'D-ADA', '2026-10-27T13:00', '2026-10-27T16:00', { weightGrams: 90 })],
+    );
+    const bob = out.byName.Bob;
+    assert.deepEqual([bob.grams, bob.prints, bob.excludedPrints, bob.excludedGrams], [0, 0, 1, 90]);
+    assert.equal(bob.list[0].excluded, true);
+    assert.equal(bob.list[0].outsideShare, 0.667);
+    assert.deepEqual([out.totals.excludedPrints, out.totals.excludedGrams], [1, 90]);
+  });
+
+  it('still counts a print exactly half outside', () => {
+    const out = usage(
+      [res('r1', 'Eve', 'Euler', '2026-10-27T10:00', '2026-10-27T11:00')],
+      [print('p1', 'D-EUL', '2026-10-27T10:00', '2026-10-27T12:00', { weightGrams: 50 })],
+    );
+    assert.deepEqual([out.byName.Eve.grams, out.byName.Eve.list[0].outsideShare], [50, 0.5]);
+  });
+
+  it('counts the grace period as inside the reservation', () => {
+    // 13:00-15:00 against a 13:00-14:00 booking: 60 min outside, but 15 of
+    // them are grace, so 45/120 = 37.5% outside.
+    const out = usage(
+      [res('r1', 'Bob', 'Ada', '2026-10-27T13:00', '2026-10-27T14:00')],
+      [print('p1', 'D-ADA', '2026-10-27T13:00', '2026-10-27T15:00')],
+      { graceMinutes: 15 },
+    );
+    assert.equal(out.byName.Bob.grams, 100);
+    assert.equal(out.byName.Bob.list[0].outsideShare, 0.375);
+  });
+
+  it('charges the reservation the print overlaps most', () => {
+    const out = usage(
+      [res('r1', 'Amy', 'Archimedes', '2026-10-27T08:00', '2026-10-27T09:00'),
+        res('r2', 'Ben', 'Archimedes', '2026-10-27T09:00', '2026-10-27T12:00')],
+      [print('p1', 'D-ARC', '2026-10-27T08:30', '2026-10-27T11:00')],
+    );
+    assert.deepEqual([out.byName.Amy.grams, out.byName.Ben.grams], [0, 100]);
+    assert.equal(out.byName.Amy.reservations, 1, 'Amy is still listed');
+  });
+
+  it('charges a running print for the time so far, and tags event bookings', () => {
+    const out = usage(
+      [res('r1', 'Event: Intro to 3D Printing', 'Ohm', '2026-10-27T18:00', '2026-10-27T22:00')],
+      [print('p1', 'D-OHM', '2026-10-27T19:00', '2026-10-27T21:00', { status: 'running', estimated: true, estimateMinutes: 120, weightGrams: 60 })],
+    );
+    const ev = out.byName['Event: Intro to 3D Printing'];
+    assert.deepEqual([ev.isEvent, ev.grams, ev.list[0].method], [true, 30, 'running']);
+    assert.equal(out.totals.users, 0, 'events are not counted as users');
+  });
+
+  it('keeps prints with no reservation separate', () => {
+    const out = usage([], [print('p1', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00', { weightGrams: 42 })]);
+    assert.deepEqual([out.unattributed.prints, out.unattributed.grams], [1, 42]);
+    assert.equal(out.users.length, 0);
+  });
+
+  it('counts a print in the period it started in', () => {
+    const out = usage(
+      [res('r0', 'Night Owl', 'Ada', '2026-10-26T22:00', '2026-10-27T02:00')],
+      [print('p1', 'D-ADA', '2026-10-26T23:00', '2026-10-27T01:00')],
+    );
+    assert.equal(out.totals.countedPrints, 0);
+    assert.equal(out.byName['Night Owl'], undefined, 'the booking started the day before too');
+  });
+
+  it('lists reservation holders on Bambu printers who printed nothing', () => {
+    const out = usage([res('r1', 'Zed', 'Ada', '2026-10-27T18:00', '2026-10-27T19:00')], []);
+    assert.deepEqual([out.byName.Zed.reservations, out.byName.Zed.grams, out.byName.Zed.prints], [1, 0, 0]);
+  });
+
+  it('notes prints that have no weight data', () => {
+    const out = usage(
+      [res('r1', 'Jane Doe', 'Ada', '2026-10-27T09:00', '2026-10-27T11:00')],
+      [print('p1', 'D-ADA', '2026-10-27T09:10', '2026-10-27T10:00', { weightGrams: null })],
+    );
+    assert.deepEqual([out.byName['Jane Doe'].prints, out.byName['Jane Doe'].grams, out.totals.printsWithoutWeight], [1, 0, 1]);
+  });
+});

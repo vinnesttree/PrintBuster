@@ -18,6 +18,17 @@ export function shiftDate(isoDate, days) {
   return DateTime.fromISO(isoDate).plus({ days }).toISODate();
 }
 
+// Every ISO date from `from` to `to`, inclusive.
+export function dateList(from, to) {
+  const out = [];
+  for (let d = DateTime.fromISO(from), end = DateTime.fromISO(to); d <= end; d = d.plus({ days: 1 })) out.push(d.toISODate());
+  return out;
+}
+
+export function daysBetween(from, to) {
+  return Math.round(DateTime.fromISO(to).diff(DateTime.fromISO(from), 'days').days);
+}
+
 // Local midnight to next local midnight. DST days are 23 or 25 hours long.
 export function dayBounds(isoDate, zone) {
   const start = DateTime.fromISO(isoDate, { zone }).startOf('day');

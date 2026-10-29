@@ -339,3 +339,70 @@ describe('material usage and large-print flags', () => {
     assert.ok(data.prints.every((p) => !p.large));
   });
 });
+
+describe('filament usage by user', () => {
+  const NOW = Date.parse('2026-10-27T23:00:00Z');
+
+  it('defaults to the last 30 days and validates the range', async () => {
+    const api = await start({ DEMO_MODE: 'true' }, { now: () => NOW });
+    const data = await (await api.get('/api/usage')).json();
+    assert.deepEqual([data.from, data.to, data.available], ['2026-09-28', '2026-10-27', true]);
+    assert.ok(data.users.some((u) => u.prints > 0), 'demo members have usage');
+    assert.equal(data.maxOutsideShare, 0.5);
+
+    for (const [q, msg] of [['from=2026-10-27&to=2026-10-01', /after the end/], ['from=2026-01-01&to=2026-10-27', /at most 92/], ['from=nope', /YYYY-MM-DD/]]) {
+      const r = await api.get(`/api/usage?${q}`);
+      assert.equal(r.status, 400);
+      assert.match((await r.json()).error.message, msg);
+    }
+  });
+
+  async function live(hubOverrides = {}) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-'));
+    const up = createMockUpstream({
+      hub: {
+        reservations: [{ name: 'Jane Doe', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T12:00' }],
+        ...hubOverrides,
+      },
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }],
+        tasks: [
+          task(1, 'D-ADA', '2026-10-26T09:10', '2026-10-26T10:40', { weight: 100 }),
+          // Cancelled after 30 of a planned 120 minutes.
+          task(2, 'D-ADA', '2026-10-26T11:00', '2026-10-26T11:30', { status: 3, costTime: 7200, weight: 80 }),
+          // No reservation at all.
+          task(3, 'D-ADA', '2026-10-26T15:00', '2026-10-26T16:00', { weight: 40 }),
+        ],
+      },
+    });
+    const api = await start({
+      DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
+      BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
+    }, { fetch: up.fetch, now: () => NOW });
+    return { api, up };
+  }
+
+  it('charges each user for prints in their reservations, prorating cancelled ones', async () => {
+    const { api, up } = await live();
+    const data = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.equal(data.available, true);
+    const jane = data.users.find((u) => u.name === 'Jane Doe');
+    assert.deepEqual([jane.prints, jane.grams, jane.reservations], [2, 120, 1]); // 100 + 80 x 30/120
+    assert.deepEqual(jane.list.map((p) => [p.method, p.usedGrams]), [['finished', 100], ['cancelled', 20]]);
+    assert.deepEqual([data.unattributed.prints, data.unattributed.grams], [1, 40]);
+
+    // One agenda page per day (the day before too), then served from cache.
+    const agendaCalls = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
+    assert.deepEqual(agendaCalls(), ['2026-10-25', '2026-10-26']);
+    await api.get('/api/usage?from=2026-10-26&to=2026-10-26');
+    assert.equal(agendaCalls().length, 2);
+  });
+
+  it('attributes nothing when the agenda cannot be read', async () => {
+    const { api } = await live({ password: 'changed' });
+    const data = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.equal(data.available, false);
+    assert.equal(data.sources.designhub.ok, false);
+    assert.deepEqual(data.users, []);
+  });
+});

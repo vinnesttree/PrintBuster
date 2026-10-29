@@ -9,11 +9,11 @@ import { DesignHubClient } from './designhub.js';
 import { describeError, SourceError } from './errors.js';
 import { PrintLog } from './printlog.js';
 import { CompareService } from './service.js';
-import { isIsoDate, todayIn } from './time.js';
+import { isIsoDate, shiftDate, todayIn } from './time.js';
 
 function notConfigured(code, message, hint) {
   const fail = () => Promise.reject(new SourceError(message, { code, hint }));
-  return { getReservations: fail, getDevices: fail, getTasks: fail };
+  return { getReservations: fail, getDay: fail, getDevices: fail, getTasks: fail };
 }
 
 export async function createApp(config, { fetch = globalThis.fetch, now = () => Date.now() } = {}) {
@@ -85,6 +85,13 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
       return res.status(400).json({ error: { message: 'date must look like YYYY-MM-DD', code: 'bad_date' } });
     }
     res.json(await service.compare(date, { force: req.query.refresh === '1' }));
+  });
+
+  app.get('/api/usage', async (req, res) => {
+    const today = todayIn(config.timezone, new Date(now()));
+    const to = req.query.to || today;
+    const from = req.query.from || (isIsoDate(to) ? shiftDate(to, -29) : to);
+    res.json(await service.usage(from, to, { force: req.query.refresh === '1' }));
   });
 
   app.post('/api/bambu/code', async (req, res) => {

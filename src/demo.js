@@ -33,6 +33,8 @@ const OTHER_TOOLS = [
 
 const FIRST = ['Jordan', 'Priya', 'Mateo', 'Hannah', 'Wei', 'Olivia', 'Marcus', 'Aisha', 'Ethan', 'Sofia', 'Noah', 'Grace', 'Liam', 'Zoe', 'Caleb', 'Maya'];
 const LAST = ['Nguyen', 'Patel', 'Garcia', 'Schmidt', 'Chen', 'Johnson', 'Okafor', 'Larsen', 'Rivera', 'Kowalski', 'Haddad', 'Brooks'];
+// A fixed roster, so the same members come back day after day.
+const MEMBERS = FIRST.map((f, i) => `${f} ${LAST[(i * 5) % LAST.length]}`);
 const TITLES = ['Drone arm bracket', 'Gear housing v3', 'Capstone enclosure', 'Phone stand', 'Bridge truss joint', 'Sensor mount', 'Robot chassis plate', 'Calibration cube', 'Wind tunnel airfoil', 'Prosthetic finger', 'Cable clips x12', 'Motor coupler'];
 
 function rng(seedText) {
@@ -59,7 +61,7 @@ function daySchedule(date, zone) {
   const at = (h, m = 0) => DateTime.fromISO(date, { zone }).set({ hour: h, minute: m });
   const reservations = [];
   const prints = [];
-  const person = () => `${pick(FIRST)} ${pick(LAST)}`;
+  const person = () => pick(MEMBERS);
 
   // Printers that host an anomaly below only take regular bookings until noon.
   const anomalyPrinters = new Set(['Faraday', 'Bernouli', 'Johnson']);
@@ -168,15 +170,18 @@ export class DemoDesignHub {
     this.now = now;
   }
 
+  // One agenda page, with the real agenda's overlapping-the-day semantics.
+  async getDay(day) {
+    const list = [...daySchedule(shiftDate(day, -1), this.zone).reservations, ...daySchedule(day, this.zone).reservations]
+      .filter((r) => r.start < DateTime.fromISO(day, { zone: this.zone }).plus({ days: 1 })
+        && r.end > DateTime.fromISO(day, { zone: this.zone }));
+    return parseAgendaHtml(renderAgendaHtml(day, list, this.zone), { zone: this.zone, requestedDate: day }).reservations;
+  }
+
   async getReservations(isoDate) {
     const byId = new Map();
     for (const day of [shiftDate(isoDate, -1), isoDate]) {
-      // Overlapping-the-day semantics, like the real agenda.
-      const list = [...daySchedule(shiftDate(day, -1), this.zone).reservations, ...daySchedule(day, this.zone).reservations]
-        .filter((r) => r.start < DateTime.fromISO(day, { zone: this.zone }).plus({ days: 1 })
-          && r.end > DateTime.fromISO(day, { zone: this.zone }));
-      const parsed = parseAgendaHtml(renderAgendaHtml(day, list, this.zone), { zone: this.zone, requestedDate: day });
-      for (const res of parsed.reservations) byId.set(res.id, res);
+      for (const res of await this.getDay(day)) byId.set(res.id, res);
     }
     return { reservations: [...byId.values()], skipped: [] };
   }
@@ -214,7 +219,10 @@ export class DemoBambu {
         if (start > now) continue;
         const end = p.end.toMillis();
         const running = end > now;
-        const weight = Math.round(((end - start) / 60000) * 0.35 * 10) / 10;
+        // A failed or cancelled job stopped about a third of the way through
+        // the time it was sliced for; Bambu keeps the full-job estimates.
+        const plannedMs = p.failed ? (end - start) * 3 : end - start;
+        const weight = Math.round((plannedMs / 60000) * 0.35 * 10) / 10;
         out.push({
           id: Number(`${day.replaceAll('-', '')}${String(start % 100000).padStart(5, '0')}`) + out.length,
           title: p.title,
@@ -229,7 +237,7 @@ export class DemoBambu {
           endTime: new Date(running ? start : end).toISOString(),
           // 2 = finished, 3 = failed; the running code is undocumented.
           status: running ? 1 : p.failed ? 3 : 2,
-          costTime: Math.round((end - start) / 1000),
+          costTime: Math.round(plannedMs / 1000),
           weight,
           length: Math.round((weight / 2.98) * 1000), // ~2.98 g/m for 1.75 mm filament
           amsDetailMapping: (p.filaments

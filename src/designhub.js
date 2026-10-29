@@ -250,6 +250,11 @@ export class DesignHubClient {
 
   // Fetch the requested day plus the day before, so prints that started
   // yesterday can be matched against yesterday's reservations.
+  // One agenda page: the reservations that overlap that day.
+  async getDay(isoDate) {
+    return (await this.getAgenda(isoDate)).reservations;
+  }
+
   async getReservations(isoDate) {
     const days = [shiftDate(isoDate, -1), isoDate];
     const byId = new Map();

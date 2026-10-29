@@ -158,7 +158,7 @@ export function buildComparison({
       materialTypes,
       multiColor,
       multiMaterial,
-      matchedReservations: matched.map((r) => ({ id: r.id, name: r.name, start: r.start, end: r.end })),
+      matchedReservations: matched.map((r) => ({ id: r.id, name: r.name, start: r.start, end: r.end, isEvent: Boolean(r.isEvent) })),
     });
   }
 

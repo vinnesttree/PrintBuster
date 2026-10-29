@@ -15,6 +15,8 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 
+The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 92 days). Search by name and sort by name, print count or filament used. Expand a member to see each print and whether it counted. See [Filament usage rules](#filament-usage-rules).
+
 ## Quick start
 
 You need Node.js 22 or newer.
@@ -199,6 +201,19 @@ Each print then gets one of these results:
 | Outside reservation | The print overlaps a reservation but spends more than a minute outside every reservation plus the grace period. Back-to-back reservations count as one block. |
 | Within reservation | The print is fully covered by reservations plus the grace period. |
 
+### Filament usage rules
+
+The usage page charges prints to reservation holders:
+
+- A print is charged to the reservation on its printer that it overlaps most. The grace period counts as inside the reservation.
+- **A print more than half outside its reservation isn't counted.** It is listed under the member as "Not counted". Exactly half outside still counts.
+- **A cancelled or failed print** counts in proportion to how long it ran: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. If Bambu gave no time estimate, the full weight counts.
+- **A print still running** counts the share of its estimated time that has elapsed.
+- A print belongs to the date range its start time falls in, so adjacent ranges never count it twice.
+- Prints that overlap no reservation are listed separately under "Prints with no reservation" and aren't charged to anyone.
+
+The weights are the slicer's estimates. The page fetches one Design Hub agenda page per day in the range; past days are cached for 10 minutes. Prints come from the print log, so usage is only known for times the log covers. Gaps are shown as a warning.
+
 ## Limitations
 
 - **Only cloud prints are visible.** Prints sent over LAN-only mode or started from an SD card never reach the Bambu cloud. A reservation used that way shows as "no print recorded", not as a violation.
@@ -212,19 +227,20 @@ Each print then gets one of these results:
 npm test
 ```
 
-The tests cover the agenda parser, the Design Hub login and session handling, every Bambu sign-in path, task paging, the matching rules, and the HTTP API. Both upstream sites are replaced by a mock in `test/helpers/mock-upstream.js`, so the tests need no network access.
+The tests cover the agenda parser, the Design Hub login and session handling, every Bambu sign-in path, task paging, the matching rules, the filament usage rules, and the HTTP API. Both upstream sites are replaced by a mock in `test/helpers/mock-upstream.js`, so the tests need no network access.
 
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/config, /api/bambu/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/config, /api/bambu/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
+src/usage.js       Filament usage per reservation holder (attribution rules)
 src/service.js     Fetches both sources in parallel, caches, polls Bambu, builds the comparison
 src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its coverage
 src/demo.js        Demo data in the real upstream formats
-public/            The page (no build step)
+public/            The pages: waterfall (index.html) and filament usage (usage.html); no build step
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)
 compose.yaml       Docker Compose service with the data volume and healthcheck
 ```

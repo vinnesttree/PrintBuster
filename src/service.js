@@ -1,12 +1,31 @@
 import { normalizeTask } from './bambu.js';
 import { buildComparison, uncoveredSegments } from './compare.js';
-import { describeError } from './errors.js';
-import { dayBounds } from './time.js';
+import { describeError, SourceError } from './errors.js';
+import { dateList, dayBounds, daysBetween, isIsoDate, shiftDate, todayIn } from './time.js';
+import { attributeUsage, MAX_OUTSIDE_SHARE } from './usage.js';
 
 // Prints longer than this that started before the selected day are missed.
 const PRINT_LOOKBACK_MS = 48 * 3600 * 1000;
 // A fetch this recent counts as an observation of the present moment.
 const FRESH_MS = 10 * 60 * 1000;
+// The usage page fetches one agenda page per day, so ranges are capped.
+export const MAX_USAGE_DAYS = 92;
+// Past days' agendas rarely change; keep them longer than today's.
+const PAST_DAY_TTL_MS = 10 * 60 * 1000;
+
+// Runs `fn` over `items` with at most `limit` in flight, keeping order.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 export class CompareService {
   constructor(config, { designhub, bambu, printLog = null, now = () => Date.now() }) {
@@ -19,11 +38,12 @@ export class CompareService {
     this.pollTimer = null;
     this.polling = false;
     this.pollError = null;
+    this.lastFetch = null;
   }
 
-  cached(key, fn, force) {
+  cached(key, fn, force, ttlMs = this.config.cacheSeconds * 1000) {
     const hit = this.cache.get(key);
-    const ttl = this.config.cacheSeconds * 1000;
+    const ttl = ttlMs;
     if (!force && hit && this.now() - hit.at < ttl) return hit.promise;
     const promise = fn();
     this.cache.set(key, { at: this.now(), promise });
@@ -42,7 +62,9 @@ export class CompareService {
     return this.cached(key, async () => {
       const devices = await this.bambu.getDevices();
       const { tasks, complete } = await this.bambu.getTasks({ sinceMs, untilMs });
-      if (this.printLog) await this.printLog.record({ tasks, devices, fetchedAt: this.now() });
+      const fetchedAt = this.now();
+      if (this.printLog) await this.printLog.record({ tasks, devices, fetchedAt });
+      this.lastFetch = { at: fetchedAt, devices, ids: new Set(tasks.map((t) => String(t.id))) };
       return { devices, tasks, complete };
     }, force);
   }
@@ -155,5 +177,117 @@ export class CompareService {
       },
     };
     return result;
+  }
+
+  // Filament used per reservation holder for prints that started between
+  // `from` and `to` (inclusive local dates).
+  async usage(from, to, { force = false } = {}) {
+    const zone = this.config.timezone;
+    if (!isIsoDate(from) || !isIsoDate(to)) {
+      throw new SourceError('Dates must look like YYYY-MM-DD.', { code: 'bad_date' });
+    }
+    if (from > to) throw new SourceError('The start date is after the end date.', { code: 'bad_range' });
+    if (daysBetween(from, to) + 1 > MAX_USAGE_DAYS) {
+      throw new SourceError(`Pick at most ${MAX_USAGE_DAYS} days.`, { code: 'bad_range' });
+    }
+
+    const now = this.now();
+    const today = todayIn(zone, new Date(now));
+    const rangeStart = Date.parse(dayBounds(from, zone).start);
+    const rangeEnd = Date.parse(dayBounds(to, zone).end);
+
+    // One agenda page per day, plus the day before `from` for bookings that
+    // started the previous evening. Nothing to fetch after today.
+    const lastDay = to < today ? to : today;
+    const days = shiftDate(from, -1) <= lastDay ? dateList(shiftDate(from, -1), lastDay) : [];
+    let reservations = null;
+    let hubError = null;
+    try {
+      const perDay = await mapLimit(days, 2, (d) => this.cached(
+        `hubday:${d}`, () => this.designhub.getDay(d), force && d >= today, d < today ? PAST_DAY_TTL_MS : undefined,
+      ));
+      const byId = new Map();
+      for (const list of perDay) for (const r of list) byId.set(r.id, r);
+      reservations = [...byId.values()];
+    } catch (err) {
+      hubError = err;
+    }
+
+    // Refresh recent Bambu data when the range reaches the last two days;
+    // older prints come from the print log alone.
+    let bambuError = null;
+    if (rangeEnd > now - PRINT_LOOKBACK_MS) {
+      try {
+        await this.fetchBambu('bambu:recent', { sinceMs: now - PRINT_LOOKBACK_MS, untilMs: now, force });
+      } catch (err) {
+        bambuError = err;
+      }
+    }
+
+    let tasks;
+    let coverage;
+    let devices = this.lastFetch?.devices || null;
+    let confirmed = this.lastFetch && now - this.lastFetch.at <= FRESH_MS ? this.lastFetch.ids : new Set();
+    if (this.printLog) {
+      tasks = this.printLog.query(rangeStart, rangeEnd);
+      coverage = this.printLog.coverage();
+      const last = coverage.at(-1);
+      if (last && last[1] < now && now - last[1] <= FRESH_MS) last[1] = now;
+    } else {
+      // Demo mode keeps no log; ask the client for the whole range.
+      try {
+        devices = await this.bambu.getDevices();
+        const got = await this.bambu.getTasks({ sinceMs: rangeStart, untilMs: Math.min(rangeEnd, now + 1) });
+        tasks = got.tasks;
+        coverage = got.complete ? [[-Infinity, Infinity]] : [];
+        confirmed = new Set(tasks.map((t) => String(t.id)));
+      } catch (err) {
+        bambuError = err;
+        tasks = [];
+        coverage = [];
+      }
+    }
+
+    const pastEnd = Math.min(rangeEnd, now);
+    const gaps = pastEnd > rangeStart ? uncoveredSegments(rangeStart, pastEnd, coverage) : [];
+
+    const base = {
+      from,
+      to,
+      timezone: zone,
+      now: new Date(now).toISOString(),
+      demo: this.config.demo,
+      graceMinutes: this.config.graceMinutes,
+      maxOutsideShare: MAX_OUTSIDE_SHARE,
+      printGaps: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
+      sources: {
+        designhub: hubError ? { ok: false, error: describeError(hubError) } : { ok: true, days: days.length },
+        bambu: {
+          ok: !bambuError,
+          ...(bambuError ? { error: describeError(bambuError), auth: this.bambu.status() } : {}),
+          log: this.printLog ? this.printLog.stats() : null,
+        },
+      },
+    };
+    // Without the agenda nothing can be attributed; say so instead of
+    // showing every print as unreserved.
+    if (!reservations) return { ...base, available: false, users: [], unattributed: { prints: 0, grams: 0, list: [] }, totals: null };
+
+    const names = new Map((devices || []).map((d) => [d.dev_id, d.name]));
+    const prints = tasks
+      .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
+      .filter(Boolean);
+    const comparison = buildComparison({
+      day: { date: from, start: new Date(rangeStart).toISOString(), end: new Date(rangeEnd).toISOString(), timezone: zone },
+      now,
+      reservations,
+      prints,
+      devices,
+      printerOrder: this.config.printerOrder,
+      printerMap: this.config.printerMap,
+      graceMinutes: this.config.graceMinutes,
+      printCoverage: coverage,
+    });
+    return { ...base, available: true, ...attributeUsage({ comparison, rangeStart, rangeEnd, now }) };
   }
 }
