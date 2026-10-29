@@ -12,6 +12,9 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 - **A print with no reservation** is red, with a ✕ badge.
 - **A print that ran outside its reservation** has an amber section showing the unreserved part, and a ! badge.
 - **A hollow band** is a reservation on a Bambu printer where no print was recorded.
+- **A grams tag** follows every print: the slicer's estimate of the filament it used. It sits after the bar, or inside it when the next print is too close, and is left off only when neither fits (the tooltip always has it). Prints longer than `FLAG_DURATION_HOURS` add the duration, e.g. `52 g · 12 h+`.
+- **A bold, inverted tag with ▲** marks a print over `FLAG_WEIGHT_GRAMS` (default 200 g).
+- **A striped blue, green and violet band** under a print marks multi-colour or multi-material prints. These colours never mean a print's status, which uses red and yellow.
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 

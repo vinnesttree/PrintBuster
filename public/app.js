@@ -145,6 +145,19 @@ const fmtHours = (h) => `${Number.isInteger(h) ? h : h.toFixed(1)} h`;
 
 // "245 g · 81 m (est.) · PETG, PLA" — Bambu's weight/length are slice estimates.
 // "245 g · 81 m (est.)" — the headline amount, or null when unknown.
+const fmtGrams = (g) => `${g < 10 ? g.toFixed(1) : Math.round(g)} g`;
+
+// The tag after a print bar: its filament weight, plus the duration when it
+// runs over the long-print threshold. Prints over the weight threshold get
+// the heavy (most noticeable) tag.
+function printChip(p) {
+  const parts = [];
+  if (p.weightGrams != null) parts.push(fmtGrams(p.weightGrams));
+  if (p.overTime) parts.push(`${fmtHours(state.data.flagDurationHours)}+`);
+  if (!parts.length) return null;
+  return { text: parts.join(' · '), heavy: Boolean(p.overWeight), long: Boolean(p.overTime) };
+}
+
 function materialAmount(p) {
   if (p.weightGrams == null && p.lengthMeters == null) return null;
   const amount = [p.weightGrams != null ? `${p.weightGrams} g` : null, p.lengthMeters != null ? `${p.lengthMeters} m` : null]
@@ -287,6 +300,14 @@ function renderChart() {
     const resLanes = assignLanes(res.map((r) => ({ id: r.id, s: Math.max(r.s, dayStart), e: Math.min(r.e, dayEnd) })));
     const printLanes = assignLanes(prints.map((p) => ({ id: p.id, s: Math.max(p.s, dayStart), e: Math.min(p.e, dayEnd) })));
     const lanes = Math.max(1, resLanes.count, printLanes.count);
+    // When the next print in each lane starts, so a print's tag can go after
+    // its bar only if it clears that print.
+    const nextStart = new Map();
+    const byLane = groupBy(prints.map((p) => ({ ...p, lane: printLanes.lanes.get(p.id) })), 'lane');
+    for (const list of byLane.values()) {
+      list.sort((a, b) => a.s - b.s);
+      list.forEach((p, i) => nextStart.set(p.id, list[i + 1] ? Math.max(list[i + 1].s, dayStart) : dayEnd));
+    }
 
     const track = el('div', { className: 'track', style: { height: `${lanes * LANE_H}px` } });
     for (const t of ticks) track.append(el('div', { className: 'gridline', style: { left: `${pct(t)}%` } }));
@@ -317,13 +338,15 @@ function renderChart() {
       const width = Math.max(pct(e) - left, 0.15);
       const lane = printLanes.lanes.get(p.id);
       const widthMs = Math.max(e - s, 1);
+      const multi = p.multiColor || p.multiMaterial;
       const node = el('div', {
-        className: ['print', `is-${p.match}`, p.s < dayStart && 'clip-start', p.e > dayEnd && 'clip-end'].filter(Boolean).join(' '),
+        className: ['print', `is-${p.match}`, multi && 'is-multi', p.s < dayStart && 'clip-start', p.e > dayEnd && 'clip-end'].filter(Boolean).join(' '),
         style: { left: `${left}%`, width: `${width}%`, top: `${lane * LANE_H + PRINT_TOP}px` },
         tabindex: '0',
         role: 'img',
         'aria-label': `Print: ${p.title} on ${p.deviceName}, ${fmtWhen(p.s)} to ${fmtWhen(p.e)}. ${MATCH[p.match].label}.`
-          + (p.large ? ` Large print${materialAmount(p) ? `, ${materialAmount(p)}` : ''}.` : '')
+          + (p.weightGrams != null ? ` ${fmtGrams(p.weightGrams)} of filament (estimate).` : '')
+          + (p.large ? ' Large print.' : '')
           + (p.multiMaterial ? ` Multi-material: ${p.materialTypes.join(', ')}.` : p.multiColor ? ' Multi-colour.' : ''),
       });
       // Highlight exactly the part of a partial print that ran unreserved.
@@ -345,9 +368,24 @@ function renderChart() {
         const m = MATCH[p.match];
         node.append(el('span', { className: `icon ${m.cls} print-badge`, 'aria-hidden': 'true', style: { left: `${offsetPx - 2}px` }, text: m.icon }));
       }
-      if (p.large) {
-        const chip = p.overWeight && p.weightGrams != null ? `${Math.round(p.weightGrams)} g` : fmtHours(state.data.flagDurationHours);
-        node.append(el('span', { className: 'print-large', 'aria-hidden': 'true', text: chip }));
+      // Multi-colour and multi-material prints get a striped band under the
+      // bar, in colours that aren't the status reds and yellows.
+      if (multi) node.append(el('span', { className: 'print-multi', 'aria-hidden': 'true' }));
+      // Every print with a known weight gets a grams tag: after the bar when
+      // it clears the next print in the lane, else inside a wide enough bar.
+      const chip = printChip(p);
+      if (chip) {
+        const chipW = textWidth(chip.text) * (chip.heavy ? 1.12 : 1) + (chip.heavy ? 16 : 12);
+        const barPx = (e - s) * pxPerMs;
+        const room = (nextStart.get(p.id) - e) * pxPerMs;
+        const place = room >= chipW + 9 ? 'after' : barPx >= chipW + 8 ? 'inside' : null;
+        if (place) {
+          node.append(el('span', {
+            className: ['print-chip', chip.heavy && 'is-heavy', chip.long && 'is-long', `is-${place}`].filter(Boolean).join(' '),
+            'aria-hidden': 'true',
+            text: chip.text,
+          }));
+        }
       }
       attachTooltip(node, printTooltip(p, row));
       track.append(node);
@@ -635,6 +673,8 @@ function renderTables() {
 function render() {
   if (!state.data) return;
   $('#demo-badge').hidden = !state.data.demo;
+  $('#legend-heavy').hidden = !(state.data.flagWeightGrams > 0);
+  $('#legend-heavy-text').textContent = `Over ${state.data.flagWeightGrams} g`;
   renderBanners();
   renderTiles();
   renderChart();
