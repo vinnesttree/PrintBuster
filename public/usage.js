@@ -1,7 +1,12 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
-const state = { config: null, data: null, allTime: new Map(), sort: { key: 'grams', dir: 'desc' }, expanded: new Set(), loading: false };
+const state = {
+  config: null, data: null, allTime: new Map(), expanded: new Set(), loading: false,
+  // Sort of the members in the selected range, and of the all-time table.
+  sort: { key: 'grams', dir: 'desc' },
+  allSort: { key: 'grams', dir: 'desc' },
+};
 
 // ---------------------------------------------------------------- helpers
 
@@ -152,33 +157,43 @@ const METHOD = {
 const totalFor = (u) => state.allTime.get(u.name);
 const sortValue = (u, key) => (key === 'total' ? totalFor(u)?.grams ?? 0 : u[key]);
 
-function visibleUsers() {
+// The name search and the event checkbox apply to both tables.
+function matchesFilters(member) {
   const q = $('#search').value.trim().toLowerCase();
-  const showEvents = $('#show-events').checked;
-  const { key, dir } = state.sort;
-  const sign = dir === 'asc' ? 1 : -1;
-  return state.data.users
-    .filter((u) => (showEvents || !u.isEvent) && (!q || u.name.toLowerCase().includes(q)))
-    .sort((a, b) => {
-      const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-      if (key === 'name') return sign * byName;
-      return sign * (sortValue(a, key) - sortValue(b, key)) || byName;
-    });
+  return ($('#show-events').checked || !member.isEvent) && (!q || member.name.toLowerCase().includes(q));
 }
 
-function sortHeader(label, key, cls) {
-  const active = state.sort.key === key;
-  const ariaSort = active ? (state.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
-  const arrow = active ? (state.sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+function sortMembers(list, { key, dir }, valueOf) {
+  const sign = dir === 'asc' ? 1 : -1;
+  return list.sort((a, b) => {
+    const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    if (key === 'name') return sign * byName;
+    return sign * (valueOf(a, key) - valueOf(b, key)) || byName;
+  });
+}
+
+function visibleUsers() {
+  return sortMembers(state.data.users.filter(matchesFilters), state.sort, sortValue);
+}
+
+// `table` is 'range' (members in the selected dates) or 'all' (all-time).
+function sortHeader(label, key, cls, table = 'range') {
+  const current = table === 'all' ? state.allSort : state.sort;
+  const active = current.key === key;
+  const ariaSort = active ? (current.dir === 'asc' ? 'ascending' : 'descending') : 'none';
+  const arrow = active ? (current.dir === 'asc' ? ' ▲' : ' ▼') : '';
   return el('th', { scope: 'col', className: cls, 'aria-sort': ariaSort },
     el('button', {
       className: 'sort-btn', type: 'button',
       onclick: () => {
-        state.sort = active
-          ? { key, dir: state.sort.dir === 'asc' ? 'desc' : 'asc' }
+        const next = active
+          ? { key, dir: current.dir === 'asc' ? 'desc' : 'asc' }
           : { key, dir: key === 'name' ? 'asc' : 'desc' };
+        if (table === 'all') state.allSort = next;
+        else state.sort = next;
         saveUrl();
-        renderUsers();
+        if (table === 'all') renderAllTime();
+        else renderUsers();
       },
     }, label, el('span', { className: 'sort-arrow', 'aria-hidden': 'true', text: arrow })));
 }
@@ -282,6 +297,46 @@ function renderUsers() {
     el('tbody', {}, rows)));
 }
 
+function renderAllTime() {
+  const all = state.data.allTime;
+  if (!all) {
+    $('#alltime-sub').textContent = '';
+    $('#alltime').replaceChildren(el('p', { className: 'empty', text: 'All-time totals are not saved in this mode.' }));
+    return;
+  }
+  const members = sortMembers(all.members.filter(matchesFilters), state.allSort,
+    (m, key) => (key === 'last' ? (m.lastPrint ? ms(m.lastPrint) : 0) : m[key]));
+  $('#alltime-sub').textContent = [
+    all.since ? `Since ${fmtDate(all.since)}` : null,
+    `${members.length} of ${all.members.length} shown`,
+    all.lastTotalRecalculation ? `total recalculated ${fmtDateTime(all.lastTotalRecalculation.at)}` : null,
+  ].filter(Boolean).join(' · ');
+  if (!members.length) {
+    $('#alltime').replaceChildren(el('p', { className: 'empty', text: all.members.length ? 'No names match your search.' : 'No usage is saved yet.' }));
+    return;
+  }
+  const maxGrams = Math.max(1, ...members.map((m) => m.grams));
+  $('#alltime').replaceChildren(el('table', { className: 'usage-table' },
+    el('thead', {}, el('tr', {},
+      sortHeader('Name', 'name', null, 'all'),
+      sortHeader('Prints', 'prints', 'num', 'all'),
+      sortHeader('Filament used', 'grams', 'num', 'all'),
+      el('th', { scope: 'col', text: 'Materials' }),
+      el('th', { scope: 'col', className: 'num', text: 'Not counted' }),
+      sortHeader('Last print', 'last', 'num col-res', 'all'))),
+    el('tbody', {}, members.map((m) => el('tr', {},
+      el('td', { className: 'member-name' }, m.name, m.isEvent ? el('span', { className: 'tag', text: 'Event' }) : null),
+      el('td', { className: 'num', text: String(m.prints) }),
+      el('td', { className: 'num usage-cell' },
+        el('span', { className: 'usage-bar', 'aria-hidden': 'true' }, el('span', { style: { width: `${(m.grams / maxGrams) * 100}%` } })),
+        el('span', { className: 'usage-val', text: fmtGrams(m.grams) })),
+      el('td', { className: 'materials', text: materialsText(m.materials) }),
+      el('td', { className: 'num' }, m.excludedPrints
+        ? el('span', { className: 'status' }, icon('icon-partial', '!'), `${m.excludedPrints} · ${fmtGrams(m.excludedGrams)}`)
+        : el('span', { className: 'muted', text: '—' })),
+      el('td', { className: 'num col-res time', text: m.lastPrint ? fmtDate(m.lastPrint) : '—' }))))));
+}
+
 function renderUnattributed() {
   const u = state.data.unattributed;
   $('#unattributed-sum').textContent = state.data.available ? `${u.prints} prints · ${fmtGrams(u.grams)}` : '';
@@ -304,6 +359,7 @@ function render() {
   renderBanners();
   renderTiles();
   renderUsers();
+  renderAllTime();
   renderUnattributed();
   const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   $('#updated').textContent = state.data.recalculated
@@ -320,6 +376,7 @@ function saveUrl() {
   const q = $('#search').value.trim();
   if (q) url.searchParams.set('q', q); else url.searchParams.delete('q');
   url.searchParams.set('sort', `${state.sort.key}-${state.sort.dir}`);
+  url.searchParams.set('allsort', `${state.allSort.key}-${state.allSort.dir}`);
   history.replaceState(null, '', url);
 }
 
@@ -397,6 +454,8 @@ async function init() {
   $('#search').value = params.get('q') || '';
   const [key, dir] = (params.get('sort') || '').split('-');
   if (['name', 'prints', 'grams', 'total'].includes(key) && ['asc', 'desc'].includes(dir)) state.sort = { key, dir };
+  const [allKey, allDir] = (params.get('allsort') || '').split('-');
+  if (['name', 'prints', 'grams', 'last'].includes(allKey) && ['asc', 'desc'].includes(allDir)) state.allSort = { key: allKey, dir: allDir };
 
   $('#controls').addEventListener('submit', (e) => e.preventDefault());
   $('#from').addEventListener('change', () => load());
@@ -411,8 +470,13 @@ async function init() {
       load();
     });
   }
-  $('#search').addEventListener('input', () => { saveUrl(); if (state.data) renderUsers(); });
-  $('#show-events').addEventListener('change', () => { if (state.data) renderUsers(); });
+  const refilter = () => {
+    if (!state.data) return;
+    renderUsers();
+    renderAllTime();
+  };
+  $('#search').addEventListener('input', () => { saveUrl(); refilter(); });
+  $('#show-events').addEventListener('change', refilter);
 
   load();
 }

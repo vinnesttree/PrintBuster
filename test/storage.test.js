@@ -68,7 +68,10 @@ describe('ReservationArchive', () => {
 });
 
 describe('UsageLog', () => {
-  const rec = (id, usedGrams) => ({ id, start: '2026-10-27T14:00:00.000Z', usedGrams, counted: true, reservation: { id: 'r1', name: 'Jane Doe' } });
+  const rec = (id, usedGrams) => ({
+    id, start: '2026-10-27T14:00:00.000Z', usedGrams, counted: true, reservation: { id: 'r1', name: 'Jane Doe' },
+    materials: [{ type: 'PLA', color: null, grams: usedGrams }],
+  });
 
   it('saves per-print results, re-stamping only the ones that changed', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-log-'));
@@ -99,8 +102,14 @@ describe('UsageLog', () => {
     ], { at: AT, totalRecalculation: { from: '2026-10-20', to: '2026-10-27', prints: 5, skippedPrints: 0 } });
     const t = log.totals();
     assert.deepEqual(t.members, [
-      { name: 'Jane Doe', isEvent: false, prints: 2, grams: 30.1, excludedPrints: 1, excludedGrams: 7 },
-      { name: 'Event: Open house', isEvent: true, prints: 1, grams: 3, excludedPrints: 0, excludedGrams: 0 },
+      {
+        name: 'Jane Doe', isEvent: false, prints: 2, grams: 30.1, excludedPrints: 1, excludedGrams: 7,
+        materials: { PLA: 30.1 }, lastPrint: '2026-10-27T14:00:00.000Z',
+      },
+      {
+        name: 'Event: Open house', isEvent: true, prints: 1, grams: 3, excludedPrints: 0, excludedGrams: 0,
+        materials: {}, lastPrint: '2026-10-27T19:00:00.000Z',
+      },
     ]);
     assert.deepEqual(
       [t.since, t.countedPrints, t.countedGrams, t.excludedPrints, t.excludedGrams, t.unattributedPrints, t.unattributedGrams],

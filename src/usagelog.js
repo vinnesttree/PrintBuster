@@ -74,18 +74,28 @@ export class UsageLog extends JsonFileStore {
       }
       const { name } = r.reservation;
       if (!members.has(name)) {
-        members.set(name, { name, isEvent: Boolean(r.reservation.isEvent), prints: 0, grams: 0, excludedPrints: 0, excludedGrams: 0 });
+        members.set(name, {
+          name, isEvent: Boolean(r.reservation.isEvent), prints: 0, grams: 0, excludedPrints: 0, excludedGrams: 0,
+          materials: {}, lastPrint: null,
+        });
       }
       const m = members.get(name);
+      if (!m.lastPrint || Date.parse(r.start) > Date.parse(m.lastPrint)) m.lastPrint = r.start;
       if (r.counted) {
         m.prints++;
         m.grams += grams;
+        for (const f of r.materials || []) m.materials[f.type] = (m.materials[f.type] || 0) + f.grams;
       } else {
         m.excludedPrints++;
         m.excludedGrams += grams;
       }
     }
-    const list = [...members.values()].map((m) => ({ ...m, grams: round1(m.grams), excludedGrams: round1(m.excludedGrams) }));
+    const list = [...members.values()].map((m) => ({
+      ...m,
+      grams: round1(m.grams),
+      excludedGrams: round1(m.excludedGrams),
+      materials: Object.fromEntries(Object.entries(m.materials).map(([type, g]) => [type, round1(g)])),
+    }));
     for (const m of list) {
       out.countedPrints += m.prints;
       out.countedGrams += m.grams;
