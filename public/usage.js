@@ -364,7 +364,8 @@ function render() {
   const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   $('#updated').textContent = state.data.recalculated
     ? `Recalculated${state.data.demo ? '' : ' and saved'} ${time}`
-    : `Updated ${time}`;
+    : collectedText(state.data.collector) || `Updated ${time}`;
+  $('#updated').title = scheduleText(state.data.collector);
 }
 
 // ---------------------------------------------------------------- data
@@ -422,6 +423,7 @@ function setBusy(busy) {
 async function recalculateTotal() {
   if (!state.data) return;
   const seq = ++loadSeq;
+  state.loading = true;
   setBusy(true);
   $('#updated').textContent = 'Recalculating the all-time total from saved data…';
   try {
@@ -438,7 +440,10 @@ async function recalculateTotal() {
     $('#banners').replaceChildren(banner('icon-bad', '✕', 'Could not recalculate the all-time total', err.message));
     $('#updated').textContent = '';
   } finally {
-    if (seq === loadSeq) setBusy(false);
+    if (seq === loadSeq) {
+      state.loading = false;
+      setBusy(false);
+    }
   }
 }
 
@@ -463,6 +468,9 @@ async function init() {
   $('#refresh').addEventListener('click', () => load({ force: true }));
   $('#recalc').addEventListener('click', () => load({ recalculate: true }));
   $('#recalc-total').addEventListener('click', recalculateTotal);
+  // The server collects the data; reload the view when it says there is
+  // something new, unless a load or recalculation is under way.
+  liveUpdates(() => { if (state.data && !state.loading) load(); });
   for (const btn of document.querySelectorAll('.presets [data-days]')) {
     btn.addEventListener('click', () => {
       $('#to').value = isoToday();

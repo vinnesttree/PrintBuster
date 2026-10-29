@@ -140,7 +140,8 @@ describe('live mode', () => {
   it('compares live data end to end, including the emailed-code sign-in', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
     const up = upstream('verifyCode');
-    const api = await start(env(dir), { fetch: up.fetch, now: () => NOW });
+    let clock = NOW;
+    const api = await start(env(dir), { fetch: up.fetch, now: () => clock });
 
     let data = await (await api.get('/api/compare?date=2026-10-27')).json();
     assert.equal(data.sources.designhub.ok, true);
@@ -162,12 +163,23 @@ describe('live mode', () => {
     assert.deepEqual(data.prints.map((p) => [p.id, p.match]), [['bb-1', 'reserved'], ['bb-2', 'unreserved']]);
     assert.equal(data.summary.unreserved, 1);
 
-    // Cached: a second request inside CACHE_SECONDS does not hit upstream.
+    // Pages read what the server collected: more requests (from any number
+    // of viewers) inside the collection interval don't reach upstream.
     const before = up.calls.length;
     await api.get('/api/compare?date=2026-10-27');
+    await api.get('/api/compare?date=2026-10-27');
     assert.equal(up.calls.length, before);
+    // Refresh starts a collection, unless one ran in the last 15 seconds.
+    await api.get('/api/compare?date=2026-10-27&refresh=1');
+    assert.equal(up.calls.length, before);
+    clock += 20000;
     await api.get('/api/compare?date=2026-10-27&refresh=1');
     assert.ok(up.calls.length > before);
+    // Older than the 2-minute active interval: the next request collects.
+    const afterRefresh = up.calls.length;
+    clock += 3 * 60000;
+    await api.get('/api/compare?date=2026-10-27');
+    assert.ok(up.calls.length > afterRefresh);
   });
 
   it('shows the other source when one fails', async () => {
@@ -235,7 +247,7 @@ describe('print log', () => {
     const { up, env } = await setup();
     let clock = at('2026-10-26T21:30:00-05:00');
     const first = await createApp(loadConfig(env, []), { fetch: up.fetch, now: () => clock });
-    await first.locals.service.pollBambu();
+    await first.locals.service.collect();
 
     // Two days later Bambu only returns recent work.
     clock = at('2026-10-28T12:00:00-05:00');
@@ -283,7 +295,7 @@ describe('print log', () => {
     const { up, env } = await setup();
     let clock = at('2026-10-26T21:30:00-05:00');
     const first = await createApp(loadConfig(env, []), { fetch: up.fetch, now: () => clock });
-    await first.locals.service.pollBambu();
+    await first.locals.service.collect();
 
     clock = at('2026-10-26T22:00:00-05:00');
     up.bambu.validTokens.clear(); // Bambu now rejects the token
@@ -409,12 +421,13 @@ describe('filament usage by user', () => {
     assert.deepEqual([data.unattributed.prints, data.unattributed.grams], [1, 40]);
 
     // One agenda page per day: the day before and after too (bookings from
-    // the evening before, or starting just after the grace period). Past days
-    // are then final and come from the saved copy.
+    // the evening before, or starting just after the grace period). The
+    // server's collection reads yesterday and today; the page reads the rest.
     const agendaCalls = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
-    assert.deepEqual(agendaCalls(), ['2026-10-25', '2026-10-26', '2026-10-27']);
+    assert.deepEqual(agendaCalls(), ['2026-10-26', '2026-10-27', '2026-10-25']);
+    // Past days are final and saved; today comes from the collection.
     await api.get('/api/usage?from=2026-10-26&to=2026-10-26&refresh=1');
-    assert.deepEqual(agendaCalls().length, 4, 'only today is read again');
+    assert.equal(agendaCalls().length, 3);
   });
 
   it('keeps reservations on disk and uses them after a restart when Design Hub is down', async () => {
@@ -547,5 +560,72 @@ describe('filament usage by user', () => {
     assert.equal(data.available, false);
     assert.equal(data.sources.designhub.ok, false);
     assert.deepEqual(data.users, []);
+  });
+});
+
+describe('server-side collection and live updates', () => {
+  const NOW = Date.parse('2026-10-27T23:00:00Z');
+
+  // Reads server-sent events from a streaming response.
+  function eventReader(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    return async function next() {
+      for (;;) {
+        const i = buf.indexOf('\n\n');
+        if (i >= 0) {
+          const raw = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          if (raw.startsWith(':')) continue;
+          const fields = Object.fromEntries(raw.split('\n').map((l) => [l.slice(0, l.indexOf(':')), l.slice(l.indexOf(':') + 2)]));
+          return { event: fields.event, data: JSON.parse(fields.data) };
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error('stream closed');
+        buf += decoder.decode(value, { stream: true });
+      }
+    };
+  }
+
+  async function viewersSoon(api, n) {
+    for (let i = 0; i < 50; i++) {
+      const { collector } = await (await api.get('/api/config')).json();
+      if (collector.viewers === n) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.fail(`viewers never reached ${n}`);
+  }
+
+  it('counts open pages and tells them when new data is in', async () => {
+    const api = await start({ DEMO_MODE: 'true', POLL_ACTIVE_MINUTES: '2', POLL_IDLE_MINUTES: '15' }, { now: () => NOW });
+    const config = await (await api.get('/api/config')).json();
+    assert.deepEqual([config.collector.viewers, config.collector.activeMinutes, config.collector.idleMinutes], [0, 2, 15]);
+
+    const pages = [new AbortController(), new AbortController()];
+    const streams = await Promise.all(pages.map((c) => fetch(`${api.base}/api/events`, { signal: c.signal })));
+    assert.match(streams[0].headers.get('content-type'), /^text\/event-stream/);
+    const next = streams.map(eventReader);
+    assert.equal((await next[0]()).event, 'hello');
+    assert.equal((await next[1]()).event, 'hello');
+    await viewersSoon(api, 2);
+
+    // A collection (here started by Refresh) is announced to every page.
+    await api.get('/api/compare?refresh=1');
+    const updates = await Promise.all(next.map((n) => n()));
+    assert.deepEqual(updates.map((u) => u.event), ['update', 'update']);
+    assert.equal(updates[0].data.lastRunAt, new Date(NOW).toISOString());
+
+    pages[0].abort();
+    await viewersSoon(api, 1);
+    pages[1].abort();
+    await viewersSoon(api, 0);
+  });
+
+  it('reports when the data was collected with every response', async () => {
+    const api = await start({ DEMO_MODE: 'true' }, { now: () => NOW });
+    const compare = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const usage = await (await api.get('/api/usage?from=2026-10-27&to=2026-10-27')).json();
+    for (const data of [compare, usage]) assert.equal(data.collector.lastRunAt, new Date(NOW).toISOString());
   });
 });

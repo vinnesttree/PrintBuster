@@ -107,8 +107,6 @@ export function loadConfig(env = process.env, argv = process.argv) {
     tokenCachePath: path.resolve(ROOT_DIR, str(env, 'BAMBU_TOKEN_CACHE', 'data/bambu-token.json')),
     taskPageSize: int(env, 'BAMBU_TASK_PAGE_SIZE', 50, { min: 1 }),
     maxTaskPages: int(env, 'BAMBU_MAX_TASK_PAGES', 10, { min: 1 }),
-    // Bambu keeps about a day of history; poll so the print log has no gaps.
-    pollMinutes: int(env, 'BAMBU_POLL_MINUTES', 15, { min: 0 }),
   };
   bambu.configured = Boolean((bambu.email && bambu.password) || bambu.accessToken);
 
@@ -128,6 +126,11 @@ export function loadConfig(env = process.env, argv = process.argv) {
     appUsername: str(env, 'APP_USERNAME', 'admin'),
     appPassword: env.APP_PASSWORD ?? '',
     cacheSeconds: int(env, 'CACHE_SECONDS', 60, { min: 0 }),
+    // The server collects from both sites every POLL_ACTIVE_MINUTES while a
+    // page is open and every POLL_IDLE_MINUTES otherwise; 0 turns one off.
+    // BAMBU_POLL_MINUTES is the older name for the idle interval.
+    pollActiveMinutes: num(env, 'POLL_ACTIVE_MINUTES', 2, { min: 0 }),
+    pollIdleMinutes: num(env, 'POLL_IDLE_MINUTES', num(env, 'BAMBU_POLL_MINUTES', 15, { min: 0 }), { min: 0 }),
     graceMinutes: int(env, 'MATCH_GRACE_MINUTES', 15, { min: 0 }),
     // Flag a print as large above these. 0 turns a flag off.
     flagWeightGrams: num(env, 'FLAG_WEIGHT_GRAMS', 200, { min: 0 }),

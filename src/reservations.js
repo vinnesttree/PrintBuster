@@ -27,14 +27,16 @@ export class ReservationArchive extends JsonFileStore {
     return [...this.days.keys()].sort();
   }
 
-  // Saves one day's reservations. `final` marks a day read after it ended.
-  save(date, reservations, { fetchedAt, final }) {
+  // Saves one day's reservations, and any agenda rows that could not be
+  // read. `final` marks a day read after it ended.
+  save(date, reservations, { fetchedAt, final, skipped = [] }) {
     const prev = this.days.get(date);
     if (prev?.final && !final) return this.queue;
-    const day = { fetchedAt: new Date(fetchedAt).toISOString(), final: Boolean(final), reservations };
+    const day = { fetchedAt: new Date(fetchedAt).toISOString(), final: Boolean(final), reservations, ...(skipped.length ? { skipped } : {}) };
     this.days.set(date, day);
     // Rewriting the file for an unchanged day would only churn it.
-    if (prev && prev.final === day.final && JSON.stringify(prev.reservations) === JSON.stringify(reservations)) return this.queue;
+    const content = (d) => JSON.stringify([d.reservations, d.skipped || []]);
+    if (prev && prev.final === day.final && content(prev) === content(day)) return this.queue;
     return this.persist(() => ({ days: Object.fromEntries([...this.days.entries()].sort(([a], [b]) => a.localeCompare(b))) }));
   }
 

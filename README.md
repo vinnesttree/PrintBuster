@@ -94,8 +94,8 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `TIMEZONE` | The time zone the agenda uses. Default `America/Chicago`. |
 | `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. With Docker Compose, these choose where the container is published. |
 | `APP_USERNAME`, `APP_PASSWORD` | Optional basic-auth login for the PrintBuster page. Set these before sharing the page on the network, because it shows member names. |
-| `CACHE_SECONDS` | How long fetched data is reused before the sites are asked again. Default 60. |
-| `BAMBU_POLL_MINUTES` | How often Bambu is checked in the background to fill the [print log](#print-log), even when nobody has the page open. Default 15. `0` turns background checks off. |
+| `POLL_ACTIVE_MINUTES`, `POLL_IDLE_MINUTES` | How often the server [collects data](#data-collection) from Design Hub and Bambu: every `POLL_ACTIVE_MINUTES` (default 2) while anyone has a page open, every `POLL_IDLE_MINUTES` (default 15) while nobody does. Decimals are allowed. `0` turns that schedule off. `BAMBU_POLL_MINUTES` still works as the older name for `POLL_IDLE_MINUTES`. |
+| `CACHE_SECONDS` | How long an agenda day that the collection doesn't cover (such as a future date someone looks at) is reused before Design Hub is asked again. Default 60. |
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
 | `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
@@ -108,7 +108,7 @@ The resulting token is saved to `data/bambu-token.json` (git-ignored, readable o
 
 ### Print log
 
-Bambu's cloud only keeps about a day of print history, so PrintBuster saves every print it sees to `data/print-log.jsonl`. It checks Bambu every `BAMBU_POLL_MINUTES` (default 15) whether or not anyone has the page open. That lets you go back to any day since the log started and still compare it against the agenda.
+Bambu's cloud only keeps about a day of print history, so PrintBuster saves every print it sees to `data/print-log.jsonl`. The server's [data collection](#data-collection) checks Bambu every 15 minutes even when nobody has a page open, and every 2 minutes while someone does. That lets you go back to any day since the log started and still compare it against the agenda.
 
 - **What's in it.** One line of JSON per print, written when PrintBuster first sees the print and again whenever it changes (for example when it finishes). The last line for an `id` is the current one. Each line has the print's start and end times (UTC), the Bambu status, the printer, the job title and when it was recorded:
 
@@ -162,6 +162,25 @@ You only need this if signing in with `BAMBU_EMAIL` and `BAMBU_PASSWORD` fails, 
 Bambu's sign-in tokens usually last about 3 months. When the page says "Bambu rejected BAMBU_ACCESS_TOKEN", copy a new one. This token also gives full access to the Bambu account, so keep it private.
 
 ## How it works
+
+### Data collection
+
+The server, not the browser, fetches data from Design Hub and Bambu, on its own schedule:
+
+- **Every 2 minutes while anyone has a page open** (`POLL_ACTIVE_MINUTES`), whether that's the waterfall or the usage page, in any number of browsers.
+- **Every 15 minutes while nobody does** (`POLL_IDLE_MINUTES`), so the print log and saved reservations keep filling with no one watching.
+
+Each collection reads Bambu's printers and recent prints into the print log, and yesterday's (until it's final) and today's agenda into the saved reservations. It also saves a few finished days that are still missing.
+
+Pages never ask Design Hub or Bambu themselves. They read what the server collected, so ten viewers cause no more requests than one. How it fits together:
+
+- **How the server knows a page is open.** While a page is visible, it holds a connection to `/api/events`. A page in a background tab or a minimized window lets go of it, and so stops counting as open.
+- **How pages learn about new data.** After each collection the server sends an update over that connection, and every open page redraws. The waterfall's **Live updates** box turns this off for that page.
+- **When the first page opens.** If the data is more than 2 minutes old, the server collects right away.
+- **Refresh.** It starts a collection, unless one ran in the last 15 seconds.
+- **The status line.** "Checked 7:58 PM" shows when the server last collected. Hover over it for the schedule and how many pages are open.
+- **Dates outside the collection.** Viewing a future date, or a past day that was never saved, reads that agenda page from Design Hub when asked, and keeps it for `CACHE_SECONDS`.
+- **Errors.** If a collection fails, the pages show the error, and the server logs it once rather than on every run.
 
 ### Design Hub
 
@@ -222,12 +241,12 @@ The weights are the slicer's estimates. Prints come from the print log, so usage
 
 Both files are in `data/`, on the Docker volume, and readable only by the file's owner because they contain member names.
 
-- **`reservations.json`** holds every Design Hub agenda day PrintBuster has read, with all of that day's reservations. A day read after it ended is final: the usage page uses the saved copy instead of asking Design Hub again, so past usage still works if Design Hub is down or a reservation later disappears from it. While Bambu polling is on, PrintBuster also saves each finished day since the print log started, a few days per poll, even if nobody opens the usage page. If Design Hub can't be reached for a day that isn't final yet, an earlier saved copy is used and the page says so.
+- **`reservations.json`** holds every Design Hub agenda day PrintBuster has read, with all of that day's reservations. A day read after it ended is final: the usage page uses the saved copy instead of asking Design Hub again, so past usage still works if Design Hub is down or a reservation later disappears from it. The server's [data collection](#data-collection) also saves each finished day since the print log started, a few days per run, even if nobody opens a page. If Design Hub can't be reached for a day that isn't final yet, an earlier saved copy is used and the page says so.
 - **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation, grams used, whether it counted and why. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
 
 The buttons:
 
-- **Refresh** re-reads today only.
+- **Refresh** asks the server to collect now (yesterday and today, and recent prints).
 - **Recalculate** works on the selected range. It re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests.
 - **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
 
@@ -251,18 +270,19 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/config, /api/bambu/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/events, /api/config, /api/bambu/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
 src/usage.js       Filament usage per reservation holder (attribution rules)
-src/service.js     Fetches both sources in parallel, caches, polls Bambu, builds the comparison
+src/collector.js   Server-side collection schedule: 2 min with a page open, 15 min otherwise
+src/service.js     Collects from both sources, caches, builds the comparison and usage
 src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its coverage
 src/reservations.js Saved agenda days (data/reservations.json)
 src/usagelog.js    Saved per-print usage results (data/usage.json)
 src/files.js       Atomic, owner-only JSON file saving
 src/demo.js        Demo data in the real upstream formats
-public/            The pages: waterfall (index.html) and filament usage (usage.html); no build step
+public/            The pages: waterfall (index.html) and filament usage (usage.html), plus live.js for live updates; no build step
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)
 compose.yaml       Docker Compose service with the data volume and healthcheck
 ```

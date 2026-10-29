@@ -6,6 +6,7 @@
   <title>PrintBuster</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='9' height='4' rx='1' fill='%232a78d6'/%3E%3Crect x='5' y='9' width='10' height='4' rx='1' fill='%23d03b3b'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
+  <script src="live.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -37,7 +38,7 @@
       <div class="control-group">
         <label class="check"><input id="only-bambu" type="checkbox"> Bambu printers only</label>
         <label class="check"><input id="show-idle" type="checkbox"> Show idle printers</label>
-        <label class="check"><input id="auto-refresh" type="checkbox" checked> Auto-refresh</label>
+        <label class="check" title="Redraw when the server has collected new data"><input id="auto-refresh" type="checkbox" checked> Live updates</label>
       </div>
       <p id="updated" class="muted updated" aria-live="polite"></p>
     </form>

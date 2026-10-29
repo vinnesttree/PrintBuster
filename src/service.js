@@ -12,12 +12,26 @@ const FRESH_MS = 10 * 60 * 1000;
 export const MAX_USAGE_DAYS = 92;
 // Past days' agendas rarely change; keep them longer than today's.
 const PAST_DAY_TTL_MS = 10 * 60 * 1000;
-// Finished agenda days the background poll saves per run, newest first.
+// Finished agenda days each collection saves, newest first.
 const ARCHIVE_DAYS_PER_POLL = 3;
+// The Refresh buttons start a new collection unless one ran this recently.
+const REFRESH_MIN_AGE_MS = 15 * 1000;
 
 // The per-print results of attributeUsage, as saved in the usage log.
 const usageRecords = (usage) => [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
   .map((r) => ({ ...r, counted: Boolean(r.reservation) && !r.excluded }));
+
+// Logs when a collected source starts failing (once per distinct message)
+// and when it recovers. Returns the failure message to remember, or null.
+function logChange(what, previous, settled) {
+  if (settled.status === 'fulfilled') {
+    if (previous) console.log(`${what} resumed.`);
+    return null;
+  }
+  const { message, hint } = describeError(settled.reason);
+  if (message !== previous) console.warn(`${what} paused: ${message}${hint ? ` ${hint}` : ''}`);
+  return message;
+}
 
 // Runs `fn` over `items` with at most `limit` in flight, keeping order.
 async function mapLimit(items, limit, fn) {
@@ -44,10 +58,23 @@ export class CompareService {
     this.archiveError = null;
     this.now = now;
     this.cache = new Map();
-    this.pollTimer = null;
-    this.polling = false;
     this.pollError = null;
+    this.hubError = null;
     this.lastFetch = null;
+    // The latest server-side collection: what it found and which agenda days
+    // it keeps current. Set the collector with attachCollector().
+    this.collected = null;
+    this.collector = null;
+  }
+
+  attachCollector(collector) {
+    this.collector = collector;
+  }
+
+  // Brings collected data up to date if it is older than the collector's
+  // active interval, or `maxAgeMs`; any number of requests share one run.
+  async fresh(maxAgeMs) {
+    if (this.collector) await this.collector.ensureFresh(maxAgeMs);
   }
 
   cached(key, fn, force, ttlMs = this.config.cacheSeconds * 1000) {
@@ -78,69 +105,68 @@ export class CompareService {
     }, force);
   }
 
-  // One background fetch. The first one for an empty log takes everything
-  // Bambu still has.
-  pollBambu() {
+  // One server-side collection, run by the Collector: Bambu's devices and
+  // recent prints into the print log (everything Bambu still has when the
+  // log is empty), yesterday's (until final) and today's agenda into the
+  // saved reservations, then a few finished days still missing a final copy.
+  // Failures are recorded for the pages and logged once, not every run.
+  async collect() {
     const now = this.now();
-    const sinceMs = this.printLog?.coverage().length ? now - PRINT_LOOKBACK_MS : 0;
-    return this.fetchBambu('bambu:poll', { sinceMs, untilMs: now, force: true });
-  }
-
-  startPolling(minutes) {
-    if (!minutes || !this.printLog) return;
-    const run = async () => {
-      if (this.polling) return;
-      this.polling = true;
-      try {
-        await this.pollBambu();
-        if (this.pollError) console.log('Bambu print logging resumed.');
-        this.pollError = null;
-      } catch (err) {
-        const { message, hint } = describeError(err);
-        // Say it once, not every few minutes.
-        if (message !== this.pollError) console.warn(`Bambu print logging paused: ${message}${hint ? ` ${hint}` : ''}`);
-        this.pollError = message;
-      }
-      try {
-        await this.archiveAgenda();
-        if (this.archiveError) console.log('Saving reservations resumed.');
-        this.archiveError = null;
-      } catch (err) {
-        const { message, hint } = describeError(err);
-        if (message !== this.archiveError) console.warn(`Saving reservations paused: ${message}${hint ? ` ${hint}` : ''}`);
-        this.archiveError = message;
-      } finally {
-        this.polling = false;
-      }
+    const today = todayIn(this.config.timezone, new Date(now));
+    const days = [shiftDate(today, -1), today].filter((d) => !this.reservationArchive?.get(d)?.final);
+    const sinceMs = this.printLog && !this.printLog.coverage().length ? 0 : now - PRINT_LOOKBACK_MS;
+    const [cloud, hub] = await Promise.allSettled([
+      this.fetchBambu('bambu:collect', { sinceMs, untilMs: now, force: true }),
+      Promise.all(days.map((d) => this.cached(`hubday:${d}`, () => this.fetchAgendaDay(d), true))),
+    ]);
+    this.collected = {
+      at: now,
+      days: new Set([shiftDate(today, -1), today]),
+      bambu: cloud.status === 'fulfilled'
+        ? { ok: true, complete: cloud.value.complete, deviceCount: cloud.value.devices.length }
+        : { ok: false, error: cloud.reason },
+      designhub: hub.status === 'fulfilled' ? { ok: true } : { ok: false, error: hub.reason },
     };
-    run();
-    this.pollTimer = setInterval(run, minutes * 60000);
-    this.pollTimer.unref();
+    this.pollError = logChange('Bambu print logging', this.pollError, cloud);
+    this.hubError = logChange('Reading the Design Hub agenda', this.hubError, hub);
+    try {
+      await this.archiveAgenda();
+      if (this.archiveError) console.log('Saving reservations resumed.');
+      this.archiveError = null;
+    } catch (err) {
+      const { message, hint } = describeError(err);
+      if (message !== this.archiveError) console.warn(`Saving reservations paused: ${message}${hint ? ` ${hint}` : ''}`);
+      this.archiveError = message;
+    }
   }
 
   // Reads one agenda day from Design Hub and saves it to the archive. A day
   // read after it ended is final.
   async fetchAgendaDay(date) {
-    const reservations = await this.designhub.getDay(date);
+    const { reservations, skipped = [] } = await this.designhub.getAgenda(date);
     const fetchedAt = this.now();
     const final = fetchedAt >= Date.parse(dayBounds(date, this.config.timezone).end);
-    if (this.reservationArchive) await this.reservationArchive.save(date, reservations, { fetchedAt, final });
-    return reservations;
+    if (this.reservationArchive) await this.reservationArchive.save(date, reservations, { fetchedAt, final, skipped });
+    return { reservations, skipped };
   }
 
-  // One agenda day for the usage page: from the archive once final (unless
-  // recalculating), else from Design Hub, falling back to an earlier saved
-  // copy if that fails.
-  async agendaDay(date, { force, today, recalculate }) {
+  // One agenda day: from the archive once final (unless recalculating),
+  // from the server's collection for the days it keeps current, else read
+  // from Design Hub now, falling back to an earlier saved copy if that fails.
+  async agendaDay(date, { force = false, today, recalculate = false }) {
     const saved = this.reservationArchive?.get(date);
-    if (saved?.final && !recalculate) return { reservations: saved.reservations, from: 'archive' };
+    const fromSaved = (from, error) => ({ reservations: saved.reservations, skipped: saved.skipped || [], from, error });
+    if (saved?.final && !recalculate) return fromSaved('archive');
+    if (saved && !recalculate && this.collected?.days.has(date)) {
+      return this.collected.designhub.ok ? fromSaved('collected') : fromSaved('stale', this.collected.designhub.error);
+    }
     try {
-      const reservations = await this.cached(
+      const day = await this.cached(
         `hubday:${date}`, () => this.fetchAgendaDay(date), recalculate || (force && date >= today), date < today ? PAST_DAY_TTL_MS : undefined,
       );
-      return { reservations, from: 'designhub' };
+      return { ...day, from: 'designhub' };
     } catch (err) {
-      if (saved) return { reservations: saved.reservations, from: 'stale', error: err };
+      if (saved) return fromSaved('stale', err);
       throw err;
     }
   }
@@ -160,28 +186,53 @@ export class CompareService {
     for (const d of missing.slice(0, ARCHIVE_DAYS_PER_POLL)) await this.fetchAgendaDay(d);
   }
 
-  stopPolling() {
-    clearInterval(this.pollTimer);
-    this.pollTimer = null;
+  // Bambu's state for a page: with a print log, what the last collection
+  // found (pages never ask Bambu themselves); demo mode, which keeps no log,
+  // asks its generated client for the window instead.
+  async bambuFor(key, { sinceMs, untilMs, force }) {
+    if (this.printLog) {
+      const found = this.collected?.bambu;
+      if (!found) return { ok: false, error: new SourceError('Bambu has not been checked yet.', { code: 'bambu_pending' }) };
+      const fresh = this.lastFetch && this.now() - this.lastFetch.at <= FRESH_MS;
+      return { ...found, devices: this.lastFetch?.devices || [], confirmed: fresh ? this.lastFetch.ids : new Set() };
+    }
+    try {
+      const got = await this.fetchBambu(key, { sinceMs, untilMs, force });
+      return { ok: true, ...got, deviceCount: got.devices.length, confirmed: new Set(got.tasks.map((t) => String(t.id))) };
+    } catch (err) {
+      return { ok: false, error: err };
+    }
   }
 
   async compare(isoDate, { force = false } = {}) {
+    await this.fresh(force ? REFRESH_MIN_AGE_MS : undefined);
     const day = dayBounds(isoDate, this.config.timezone);
     const dayStart = Date.parse(day.start);
     const sinceMs = dayStart - PRINT_LOOKBACK_MS;
     const untilMs = Date.parse(day.end);
+    const today = todayIn(this.config.timezone, new Date(this.now()));
 
-    const [hub, cloud] = await Promise.allSettled([
-      this.cached(`hub:${isoDate}`, () => this.designhub.getReservations(isoDate), force),
-      this.fetchBambu(`bambu:${isoDate}`, { sinceMs, untilMs, force }),
+    // This day's agenda page plus the day before, for bookings that started
+    // the previous evening.
+    const hubDays = [shiftDate(isoDate, -1), isoDate];
+    const [hub, cloud] = await Promise.all([
+      Promise.all(hubDays.map((d) => this.agendaDay(d, { force, today })))
+        .then((got) => ({ ok: true, got }), (error) => ({ ok: false, error })),
+      this.bambuFor(`bambu:${isoDate}`, { sinceMs, untilMs, force }),
     ]);
+    let reservations = null;
+    if (hub.ok) {
+      const byId = new Map();
+      for (const d of hub.got) for (const r of d.reservations) byId.set(r.id, r);
+      reservations = [...byId.values()];
+    }
 
     const now = this.now();
-    const cloudOk = cloud.status === 'fulfilled';
-    const names = new Map(cloudOk ? cloud.value.devices.map((d) => [d.dev_id, d.name]) : []);
+    const cloudOk = cloud.ok;
+    const names = new Map((cloud.devices || []).map((d) => [d.dev_id, d.name]));
 
-    // With a print log, prints come from it (it includes this fetch) and only
-    // spans that some fetch observed count as known. Demo mode has no log.
+    // With a print log, prints come from it and only spans that some fetch
+    // observed count as known. Demo mode has no log.
     let tasks;
     let coverage;
     if (this.printLog) {
@@ -190,8 +241,8 @@ export class CompareService {
       const last = coverage.at(-1);
       if (last && last[1] < now && now - last[1] <= FRESH_MS) last[1] = now;
     } else {
-      tasks = cloudOk ? cloud.value.tasks : [];
-      coverage = cloudOk && cloud.value.complete ? [[-Infinity, Infinity]] : [];
+      tasks = cloudOk ? cloud.tasks : [];
+      coverage = cloudOk && cloud.complete ? [[-Infinity, Infinity]] : [];
     }
 
     // The part of the day that has already happened but was never observed.
@@ -202,7 +253,7 @@ export class CompareService {
 
     let prints = null;
     if (cloudOk || printsAvailable) {
-      const confirmed = new Set(cloudOk ? cloud.value.tasks.map((t) => String(t.id)) : []);
+      const confirmed = cloud.confirmed || new Set();
       prints = tasks
         .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
         .filter(Boolean);
@@ -211,9 +262,9 @@ export class CompareService {
     const result = buildComparison({
       day,
       now,
-      reservations: hub.status === 'fulfilled' ? hub.value.reservations : null,
+      reservations,
       prints,
-      devices: cloudOk ? cloud.value.devices : null,
+      devices: cloudOk ? cloud.devices : null,
       printerOrder: this.config.printerOrder,
       printerMap: this.config.printerMap,
       graceMinutes: this.config.graceMinutes,
@@ -225,17 +276,19 @@ export class CompareService {
     result.demo = this.config.demo;
     result.printsAvailable = prints !== null && printsAvailable;
     result.printGaps = gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() }));
+    const stale = hub.ok ? hub.got.find((d) => d.from === 'stale') : null;
     result.sources = {
-      designhub: hub.status === 'fulfilled'
-        ? { ok: true, skippedRows: hub.value.skipped }
-        : { ok: false, error: describeError(hub.reason) },
+      designhub: hub.ok
+        ? { ok: true, skippedRows: hub.got[1].skipped, ...(stale ? { stale: true, error: describeError(stale.error) } : {}) }
+        : { ok: false, error: describeError(hub.error) },
       bambu: {
         ...(cloudOk
-          ? { ok: true, complete: cloud.value.complete, deviceCount: cloud.value.devices.length }
-          : { ok: false, error: describeError(cloud.reason), auth: this.bambu.status() }),
+          ? { ok: true, complete: cloud.complete, deviceCount: cloud.deviceCount }
+          : { ok: false, error: describeError(cloud.error), auth: this.bambu.status() }),
         log: this.printLog ? this.printLog.stats() : null,
       },
     };
+    result.collector = this.collector ? this.collector.status() : null;
     return result;
   }
 
@@ -252,6 +305,7 @@ export class CompareService {
     if (daysBetween(from, to) + 1 > MAX_USAGE_DAYS) {
       throw new SourceError(`Pick at most ${MAX_USAGE_DAYS} days.`, { code: 'bad_range' });
     }
+    await this.fresh(force ? REFRESH_MIN_AGE_MS : undefined);
 
     const now = this.now();
     const today = todayIn(zone, new Date(now));
@@ -266,7 +320,7 @@ export class CompareService {
     const days = shiftDate(from, -1) <= lastDay ? dateList(shiftDate(from, -1), lastDay) : [];
     let reservations = null;
     let hubError = null;
-    const daysFrom = { designhub: 0, archive: 0, stale: 0 };
+    const daysFrom = { designhub: 0, archive: 0, stale: 0, collected: 0 };
     try {
       const perDay = await mapLimit(days, 2, (d) => this.agendaDay(d, { force, today, recalculate }));
       const byId = new Map();
@@ -279,15 +333,13 @@ export class CompareService {
       hubError = err;
     }
 
-    // Refresh recent Bambu data when the range reaches the last two days;
-    // older prints come from the print log alone.
+    // Prints come from the print log, which the server's collection keeps
+    // filling; report Bambu as the last collection found it.
     let bambuError = null;
-    if (rangeEnd > now - PRINT_LOOKBACK_MS) {
-      try {
-        await this.fetchBambu('bambu:recent', { sinceMs: now - PRINT_LOOKBACK_MS, untilMs: now, force });
-      } catch (err) {
-        bambuError = err;
-      }
+    if (this.printLog) {
+      const found = this.collected?.bambu;
+      if (!found) bambuError = new SourceError('Bambu has not been checked yet.', { code: 'bambu_pending' });
+      else if (!found.ok) bambuError = found.error;
     }
 
     let tasks;
@@ -326,10 +378,11 @@ export class CompareService {
       graceMinutes: this.config.graceMinutes,
       maxOutsideShare: MAX_OUTSIDE_SHARE,
       printGaps: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
+      collector: this.collector ? this.collector.status() : null,
       sources: {
         designhub: hubError
           ? { ok: false, error: describeError(hubError) }
-          : { ok: true, days: days.length, savedDays: daysFrom.archive, staleDays: daysFrom.stale },
+          : { ok: true, days: days.length, savedDays: daysFrom.archive, collectedDays: daysFrom.collected, staleDays: daysFrom.stale },
         reservationArchive: this.reservationArchive ? this.reservationArchive.stats() : null,
         usageLog: this.usageLog ? this.usageLog.stats() : null,
         bambu: {
