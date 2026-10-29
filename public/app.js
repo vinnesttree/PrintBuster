@@ -430,8 +430,8 @@ function renderTiles() {
     el('div', { className: 'tile-value', text: value }),
     el('div', { className: 'tile-note', text: note }));
   $('#tiles').replaceChildren(
-    tile('icon-bad', '✕', 'Prints with no reservation', val(s.unreserved, both), 'Bambu jobs on a printer nobody had reserved', both && s.unreserved > 0),
-    tile('icon-partial', '!', 'Prints outside their reservation', val(s.partial, both), `Started early or ran late by more than ${graceMinutes} min`),
+    tile('icon-bad', '✕', 'Prints with no reservation', val(s.unreserved, both), 'Bambu jobs that didn\u2019t start in a reservation, or were under 10% inside one', both && s.unreserved > 0),
+    tile('icon-partial', '!', 'Prints outside their reservation', val(s.partial, both), `Started in a reservation, then ran more than ${graceMinutes} min past it`),
     tile('icon-ok', '✓', 'Prints within a reservation', val(s.reserved, both), `of ${val(s.prints, printsAvailable)} Bambu prints this day`),
     tile('icon-info', 'i', 'Reservations', val(s.reservations, sources.designhub.ok),
       printsAvailable ? `${s.reservationsWithoutPrint} on Bambu printers with no print recorded` : 'Design Hub agenda'),

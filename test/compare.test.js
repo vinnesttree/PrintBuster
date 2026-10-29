@@ -113,6 +113,22 @@ describe('buildComparison', () => {
     assert.deepEqual([result.prints[0].match, result.prints[0].noReservationReason], ['unreserved', 'started-outside']);
   });
 
+  it('treats an overnight print started just after one booking ended as unreserved on the next day', () => {
+    // From a live report: Clarke, failed print Oct 26 11:34 PM to Oct 27
+    // 1:45 PM, viewed on Oct 27. It started 4 minutes after an evening
+    // booking ended, and only ran into Hoai's 1:30-5:00 PM booking at the
+    // end. It used to show as "outside reservation", 13 h 30 min unreserved.
+    const result = compare(
+      [res('evening', 'Ohm', '2026-10-26T21:00', '2026-10-26T23:30'),
+        res('hoai', 'Ohm', '2026-10-27T13:30', '2026-10-27T17:00', { name: 'Hoai Nguyen' })],
+      [print('p', 'D-OHM', '2026-10-26T23:34', '2026-10-27T13:45', { status: 'failed' })],
+    );
+    const p = result.prints[0];
+    assert.deepEqual([p.match, p.noReservationReason, p.insideShare, p.uncoveredMinutes], ['unreserved', 'started-outside', 0.048, 851]);
+    assert.deepEqual(p.matchedReservations.map((r) => r.id), ['hoai']);
+    assert.equal(result.summary.partial, 0);
+  });
+
   it('counts a print started in the grace period before a reservation as reserved', () => {
     const result = compare(
       [res('r1', 'Ohm', '2026-10-27T13:00', '2026-10-27T14:00')],
