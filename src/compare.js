@@ -40,6 +40,29 @@ export function uncoveredSegments(start, end, intervals) {
   return gaps;
 }
 
+// Reservations grouped by row with their times parsed once, so a print can
+// look at only the reservations near it rather than every one on its
+// printer, which over a year's range would be slow.
+export function reservationIndex(reservations, rowKeyOf) {
+  const index = new Map();
+  for (const r of reservations) {
+    const key = rowKeyOf(r);
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push({ r, start: ms(r.start), end: ms(r.end) });
+  }
+  return index;
+}
+
+// The reservations in `rowKey` that come within `marginMs` of the span
+// [startMs, endMs], in their original order.
+export function reservationsNear(index, rowKey, startMs, endMs, marginMs) {
+  const near = [];
+  for (const t of index.get(rowKey) || []) {
+    if (t.end >= startMs - marginMs && t.start <= endMs + marginMs) near.push(t.r);
+  }
+  return near;
+}
+
 export function buildComparison({
   day,
   now,
@@ -107,13 +130,16 @@ export function buildComparison({
   }
 
   const resByRow = new Map();
+  const rowOf = new Map();
   for (const r of allReservations) {
     const label = r.model || r.tool || 'Unknown tool';
     const row = rowFor(normalizeName(label), label);
     row.tools.add(r.tool);
     if (!resByRow.has(row.key)) resByRow.set(row.key, []);
     resByRow.get(row.key).push(r);
+    rowOf.set(r, row.key);
   }
+  const resIndex = reservationIndex(allReservations, (r) => rowOf.get(r));
 
   const outPrints = [];
   const printedReservations = new Set();
@@ -122,7 +148,9 @@ export function buildComparison({
     const pEnd = ms(p.end);
     const rowKey = deviceRow.get(p.deviceId) || rowFor(`bambu:${p.deviceId}`, p.deviceName).key;
     const row = rows.get(rowKey);
-    const candidates = resByRow.get(rowKey) || [];
+    // Only reservations within the grace period of the print can affect any
+    // rule below.
+    const candidates = reservationsNear(resIndex, rowKey, pStart, pEnd, graceMs + TOLERANCE_MS);
     // Reservations the print started in: from the grace period before one up
     // to its end. Starting after a reservation ended isn't starting in it.
     const startedIn = candidates.filter((r) => pStart >= ms(r.start) - graceMs - TOLERANCE_MS && pStart < ms(r.end));
