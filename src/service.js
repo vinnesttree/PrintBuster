@@ -8,10 +8,14 @@ import { attributeUsage, MAX_OUTSIDE_SHARE } from './usage.js';
 const PRINT_LOOKBACK_MS = 48 * 3600 * 1000;
 // A fetch this recent counts as an observation of the present moment.
 const FRESH_MS = 10 * 60 * 1000;
-// The usage page fetches one agenda page per day, so ranges are capped.
-export const MAX_USAGE_DAYS = 92;
-// Finished agenda days each collection saves, newest first.
+// The usage page's longest range: a year. Recalculate reads one agenda page
+// per day of it.
+export const MAX_USAGE_DAYS = 366;
+// Finished agenda days each collection saves, newest first, and how far back
+// it goes. Older days are saved by the admin page's import, or by viewing or
+// recalculating a range that includes them.
 const ARCHIVE_DAYS_PER_POLL = 3;
+const ARCHIVE_LOOKBACK_DAYS = 92;
 // The Refresh buttons start a new collection unless one ran this recently.
 const REFRESH_MIN_AGE_MS = 15 * 1000;
 
@@ -198,7 +202,7 @@ export class CompareService {
     const zone = this.config.timezone;
     const today = todayIn(zone, new Date(this.now()));
     const yesterday = shiftDate(today, -1);
-    const first = [shiftDate(todayIn(zone, new Date(since)), -1), shiftDate(today, -MAX_USAGE_DAYS)].sort()[1];
+    const first = [shiftDate(todayIn(zone, new Date(since)), -1), shiftDate(today, -ARCHIVE_LOOKBACK_DAYS)].sort()[1];
     if (first > yesterday) return;
     const missing = dateList(first, yesterday).filter((d) => !this.reservationArchive.get(d)?.final).reverse();
     for (const d of missing.slice(0, ARCHIVE_DAYS_PER_POLL)) await this.fetchAgendaDay(d);

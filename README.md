@@ -18,7 +18,9 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 
-The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 92 days). Search by name and sort by name, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. Next to the range figures, an **All time** column and tile show each member's total over all saved data. Below, the **All-time totals** table lists every member with saved usage, including those with no reservation in the selected range, with their prints, filament used, materials, prints not counted and last print. The name search and event checkbox apply to it too, and it sorts by name, prints, filament used or last print. **Recalculate** re-reads the selected range's reservations from Design Hub, recalculates and saves the result. **Recalculate total** recalculates every saved print from saved data only. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
+The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 366 days). Search by name and sort by name, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. Next to the range figures, an **All time** column and tile show each member's total over all saved data. Below, the **All-time totals** table lists every member with saved usage, including those with no reservation in the selected range, with their prints, filament used, materials, prints not counted and last print. The name search and event checkbox apply to it too, and it sorts by name, prints, filament used or last print. **Recalculate** re-reads the selected range's reservations from Design Hub, recalculates and saves the result. **Recalculate total** recalculates every saved print from saved data only. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
+
+The **Admin** page (`/admin.html`) holds admin tasks. For now that is **Import reservations**, which reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations). The page will later also manage logins. Until then it is protected only by `APP_PASSWORD`, like the other pages.
 
 ## Quick start
 
@@ -183,6 +185,7 @@ Each collection reads Bambu's printers and recent prints into the print log. It 
 - the server's schedule;
 - **Refresh**;
 - **Recalculate** on the usage page, which re-reads its range;
+- **Import reservations** on the Admin page, which reads its range;
 - signing in to Bambu with an emailed code.
 
 How it fits together:
@@ -269,10 +272,21 @@ All three files are in `data/`, on the Docker volume, and readable only by the f
 The buttons:
 
 - **Refresh** asks the server to collect now (yesterday and today, and recent prints).
-- **Recalculate** works on the selected range. It re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests.
+- **Recalculate** works on the selected range. It re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests, and a year about 366, which can take several minutes. For a long range, the Admin page's [import](#importing-reservations) does the same reading in the background.
 - **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
 
 `usage.json` records when each kind of recalculation last ran and for which dates. In demo mode all three are kept in memory only.
+
+### Importing reservations
+
+The server's collection saves finished days a few at a time, and only back to the day before the print log began, up to 92 days ago. To fill in more than that at once, or to pick up corrections made in Design Hub across many days, use **Import reservations** on the Admin page:
+
+1. Pick **From** and **To** (at most 366 days). The default is the 30 days up to yesterday.
+2. **Skip days already saved as final** (ticked by default) reads only days that aren't saved yet or were saved before they ended. Untick it to read every day again, as Recalculate does, so corrections in Design Hub replace the saved copy.
+3. **Recalculate all-time usage afterwards** (ticked by default) runs **Recalculate total** once the import ends, so the all-time totals include the imported days.
+4. Press **Import**.
+
+Each day is one agenda request, read two at a time. The import runs on the server, so it keeps going if you close the page. Open the page again to see its progress. **Stop** ends it after the days being read. Only one import runs at a time. If Design Hub fails 5 days in a row, the import stops by itself. Days that failed are listed with the reason, and you can import them again later. Days read after they ended are saved as final, like any other saved day, and days still to come are saved as not final.
 
 ## Limitations
 
@@ -292,7 +306,7 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/events, /api/config, /api/bambu/*, /healthz/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/admin/import[/stop], /api/events, /api/config, /api/bambu/*, /healthz/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
@@ -304,9 +318,10 @@ src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its 
 src/reservations.js Saved agenda days (data/reservations.json)
 src/usagelog.js    Saved per-print usage results (data/usage.json)
 src/assignments.js Prints with no reservation that staff assigned to a member (data/assignments.json)
+src/importer.js    The admin page's bulk reservation import, run in the background
 src/files.js       Atomic, owner-only JSON file saving
 src/demo.js        Demo data in the real upstream formats
-public/            The pages: waterfall (index.html) and filament usage (usage.html), plus live.js for live updates; no build step
+public/            The pages: waterfall (index.html), filament usage (usage.html) and admin (admin.html), plus live.js for live updates; no build step
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)
 compose.yaml       Docker Compose service with the data volume and healthcheck
 docs/              Setup guides: monitoring with Uptime Kuma (uptime-kuma.md)

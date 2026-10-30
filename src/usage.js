@@ -23,7 +23,7 @@
 //   assignments.js) is charged to that member and counted. A reservation
 //   always wins over an assignment.
 
-import { uncoveredSegments } from './compare.js';
+import { reservationIndex, reservationsNear, uncoveredSegments } from './compare.js';
 
 const ms = (iso) => Date.parse(iso);
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -113,11 +113,7 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
   const rowLabel = new Map(comparison.rows.map((r) => [r.key, r.label]));
   const bambuRows = new Set(comparison.rows.filter((r) => r.isBambu).map((r) => r.key));
   const graceMs = (comparison.graceMinutes || 0) * 60000;
-  const resByRow = new Map();
-  for (const r of comparison.reservations) {
-    if (!resByRow.has(r.rowKey)) resByRow.set(r.rowKey, []);
-    resByRow.get(r.rowKey).push(r);
-  }
+  const resIndex = reservationIndex(comparison.reservations, (r) => r.rowKey);
 
   const users = new Map();
   const userFor = (name, isEvent) => {
@@ -161,7 +157,9 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
     const { fraction, method } = usedFraction(p, now);
     const usedGrams = p.weightGrams != null ? round1(p.weightGrams * fraction) : null;
     if (usedGrams == null) weightMissing++;
-    const candidates = resByRow.get(p.rowKey) || [];
+    // Reservations farther than the grace period from the print can't be
+    // chosen or cover any of it.
+    const candidates = reservationsNear(resIndex, p.rowKey, start, ms(p.end), graceMs + 60000);
     const holder = p.match === 'unreserved' ? null : chooseReservation(p, candidates, graceMs);
     const outsideShare = holder
       ? outsideShareOf(p, candidates.filter((r) => r.name === holder.name), graceMs)

@@ -453,7 +453,7 @@ describe('filament usage by user', () => {
     // The server's collection keeps tomorrow's agenda too.
     assert.equal((await total.json()).allTime.lastTotalRecalculation.to, '2026-10-28');
 
-    for (const [q, msg] of [['from=2026-10-27&to=2026-10-01', /after the end/], ['from=2026-01-01&to=2026-10-27', /at most 92/], ['from=nope', /YYYY-MM-DD/]]) {
+    for (const [q, msg] of [['from=2026-10-27&to=2026-10-01', /after the end/], ['from=2025-10-26&to=2026-10-27', /at most 366/], ['from=nope', /YYYY-MM-DD/]]) {
       const r = await api.get(`/api/usage?${q}`);
       assert.equal(r.status, 400);
       assert.match((await r.json()).error.message, msg);
@@ -666,6 +666,18 @@ describe('filament usage by user', () => {
     const refreshed = await (await api.get('/api/usage?from=2026-10-21&to=2026-10-26&refresh=1')).json();
     assert.deepEqual(refreshed.sources.designhub.missingDays, []);
     assert.ok(refreshed.unattributed.list.some((p) => p.id === 'bb-9'));
+  });
+
+  it('allows a range of up to a year', async () => {
+    const { api } = await live();
+    const r = await api.get('/api/usage?from=2025-10-27&to=2026-10-27');
+    assert.equal(r.status, 200);
+    const data = await r.json();
+    assert.deepEqual(data.users.map((u) => [u.name, u.grams]), [['Jane Doe', 120]]);
+    // Days never saved are listed, not read from Design Hub. The startup
+    // collection saved Oct 25 to 27 of the range's 366 days.
+    const { missingDays } = data.sources.designhub;
+    assert.deepEqual([missingDays.length, missingDays[0], missingDays.at(-1)], [363, '2025-10-27', '2026-10-24']);
   });
 
   it('rejects a recalculation without valid dates', async () => {
