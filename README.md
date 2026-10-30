@@ -60,8 +60,8 @@ The container starts again whenever Docker starts (for example after a reboot), 
 How the container uses `.env`:
 
 - **Publishing address.** `HOST` and `PORT` in `.env` choose where the page is published on the host. The default `127.0.0.1:3000` means only that computer can open it. To share it on the network, set `HOST=0.0.0.0` and also set `APP_PASSWORD`. Inside the container the app always listens on `0.0.0.0:3000`.
-- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log) and the [saved reservations and usage](#saved-reservations-and-usage). `docker compose down -v` deletes the volume and everything in it.
-- **Copying the saved data out.** `docker compose cp printbuster:/app/data/print-log.jsonl .` (likewise `reservations.json` and `usage.json`).
+- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log), the [saved reservations and usage](#saved-reservations-and-usage) and the prints staff assigned to members. `docker compose down -v` deletes the volume and everything in it.
+- **Copying the saved data out.** `docker compose cp printbuster:/app/data/print-log.jsonl .` (likewise `reservations.json`, `usage.json` and `assignments.json`).
 - **Health.** The container reports healthy or unhealthy in `docker ps`, using an unauthenticated `/healthz` endpoint that returns only `{"ok":true}`.
 - **Uptime monitoring.** `/healthz/designhub` and `/healthz/bambu` answer 200 while PrintBuster can read that source and 503 when it can't, and PrintBuster can also push each source's state to Uptime Kuma. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md).
 - **Quoting.** Wrap passwords in single quotes in `.env`, e.g. `BAMBU_PASSWORD='p@ss$word#1'`. Compose treats an unquoted or double-quoted `$` as the start of a variable name, and `npm start` treats an unquoted `#` as the start of a comment. Single quotes keep the value exactly as typed in both.
@@ -103,6 +103,7 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
 | `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
+| `ASSIGNMENT_LOG_PATH` | Where prints staff assigned to a member are kept. Default `data/assignments.json`. |
 | `UPTIME_KUMA_PUSH_DESIGNHUB`, `UPTIME_KUMA_PUSH_BAMBU` | Optional. Uptime Kuma push URLs. After every collection PrintBuster reports to each whether it could read that source. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md). |
 
 ### Bambu sign-in codes
@@ -253,15 +254,17 @@ The usage page charges prints to reservation holders:
 - **A print still running** counts the share of its estimated time that has elapsed.
 - A print belongs to the date range its start time falls in, so adjacent ranges never count it twice.
 - Prints the waterfall marks **No reservation** aren't charged to anyone. That includes prints that started outside every reservation and then ran into one, and prints less than 10% inside reservations. They're listed under "Prints with no reservation", with the reason.
+- **Staff can assign a print with no reservation to a member.** In "Prints with no reservation", type the member's name under **Charge to** (the box suggests names already on the page) and press **Assign**. The print then counts toward that member's filament, prints and materials, in the selected range and in the all-time totals, under the same proration rules as any other print. It's listed under the member as "Assigned prints with no reservation", and a member with no reservation of their own gets a row too. **Remove** undoes it. Use the name exactly as Design Hub shows it, so it adds up with their reserved prints. A reservation always wins: if a later recalculation finds one for the print, it's charged to that reservation and the assignment is ignored. Assignments are saved in `data/assignments.json`.
 
 The weights are the slicer's estimates. Prints come from the print log, so usage is only known for times the log covers. Gaps are shown as a warning.
 
 ### Saved reservations and usage
 
-Both files are in `data/`, on the Docker volume, and readable only by the file's owner because they contain member names.
+All three files are in `data/`, on the Docker volume, and readable only by the file's owner because they contain member names.
 
 - **`reservations.json`** holds every Design Hub agenda day PrintBuster has read, with all of that day's reservations. A day read after it ended is final: the usage page uses the saved copy instead of asking Design Hub again, so past usage still works if Design Hub is down or a reservation later disappears from it. The server's [data collection](#data-collection) also saves each finished day since the print log started, a few days per run, even if nobody opens a page. If Design Hub can't be reached for a day that isn't final yet, an earlier saved copy is used and the page says so.
-- **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation, grams used, whether it counted and why. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
+- **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation (or which member staff assigned it to), grams used, whether it counted and why.
+- **`assignments.json`** holds the prints with no reservation that staff assigned to a member: the print id, the member's name and when it was assigned. Assigning or removing updates `usage.json` at once, so the all-time totals change without a recalculation. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
 
 The buttons:
 
@@ -269,7 +272,7 @@ The buttons:
 - **Recalculate** works on the selected range. It re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests.
 - **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
 
-`usage.json` records when each kind of recalculation last ran and for which dates. In demo mode both files are kept in memory only.
+`usage.json` records when each kind of recalculation last ran and for which dates. In demo mode all three are kept in memory only.
 
 ## Limitations
 
@@ -289,7 +292,7 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/events, /api/config, /api/bambu/*, /healthz/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/events, /api/config, /api/bambu/*, /healthz/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
@@ -300,6 +303,7 @@ src/service.js     Collects from both sources, caches, builds the comparison and
 src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its coverage
 src/reservations.js Saved agenda days (data/reservations.json)
 src/usagelog.js    Saved per-print usage results (data/usage.json)
+src/assignments.js Prints with no reservation that staff assigned to a member (data/assignments.json)
 src/files.js       Atomic, owner-only JSON file saving
 src/demo.js        Demo data in the real upstream formats
 public/            The pages: waterfall (index.html) and filament usage (usage.html), plus live.js for live updates; no build step

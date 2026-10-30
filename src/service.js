@@ -17,7 +17,7 @@ const REFRESH_MIN_AGE_MS = 15 * 1000;
 
 // The per-print results of attributeUsage, as saved in the usage log.
 const usageRecords = (usage) => [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
-  .map((r) => ({ ...r, counted: Boolean(r.reservation) && !r.excluded }));
+  .map((r) => ({ ...r, counted: Boolean(r.reservation || r.assignedTo) && !r.excluded }));
 
 // Logs when a collected source starts failing (once per distinct message)
 // and when it recovers. Returns the failure message to remember, or null.
@@ -46,13 +46,16 @@ async function mapLimit(items, limit, fn) {
 }
 
 export class CompareService {
-  constructor(config, { designhub, bambu, printLog = null, reservationArchive = null, usageLog = null, now = () => Date.now() }) {
+  constructor(config, {
+    designhub, bambu, printLog = null, reservationArchive = null, usageLog = null, assignments = null, now = () => Date.now(),
+  }) {
     this.config = config;
     this.designhub = designhub;
     this.bambu = bambu;
     this.printLog = printLog;
     this.reservationArchive = reservationArchive;
     this.usageLog = usageLog;
+    this.assignments = assignments;
     this.archiveError = null;
     this.now = now;
     this.cache = new Map();
@@ -418,6 +421,7 @@ export class CompareService {
           },
         reservationArchive: this.reservationArchive ? this.reservationArchive.stats() : null,
         usageLog: this.usageLog ? this.usageLog.stats() : null,
+        assignments: this.assignments ? this.assignments.stats() : null,
         bambu: {
           ok: !bambuError,
           ...(bambuError ? { error: describeError(bambuError), auth: this.bambu.status() } : {}),
@@ -450,12 +454,38 @@ export class CompareService {
       graceMinutes: this.config.graceMinutes,
       printCoverage: coverage,
     });
-    const usage = attributeUsage({ comparison, rangeStart, rangeEnd, now });
+    const usage = attributeUsage({ comparison, rangeStart, rangeEnd, now, assignments: this.assignments?.prints });
     if (this.usageLog) {
       await this.usageLog.save(usageRecords(usage), { at: now, recalculation: recalculate ? { from, to } : null });
       base.sources.usageLog = this.usageLog.stats();
     }
     return { ...base, available: true, recalculated: recalculate, ...usage, allTime: allTime() };
+  }
+
+  // Charges a print with no reservation to a member, or removes the
+  // assignment when `name` is empty. Its saved usage is updated at once, so
+  // the all-time totals reflect it without a recalculation.
+  async assign(printId, name) {
+    if (!this.assignments) {
+      throw new SourceError('Assignments are not available.', { code: 'not_saved' });
+    }
+    const now = this.now();
+    await this.assignments.set(printId, name, { at: now });
+    const assigned = this.assignments.get(printId) || null;
+    const saved = this.usageLog?.get(printId);
+    if (saved && !saved.reservation) {
+      const { calculatedAt, ...rest } = saved;
+      await this.usageLog.save([{
+        ...rest,
+        assignedTo: assigned ? { name: assigned.name, at: assigned.at } : null,
+        counted: Boolean(assigned) && !saved.excluded,
+      }], { at: now });
+    }
+    return {
+      assignment: assigned,
+      allTime: this.usageLog ? this.usageLog.totals() : null,
+      assignments: this.assignments.stats(),
+    };
   }
 
   // Recalculates the usage of every print from saved data only: the print
@@ -508,7 +538,7 @@ export class CompareService {
       printerMap: this.config.printerMap,
       graceMinutes: this.config.graceMinutes,
     });
-    const records = usageRecords(attributeUsage({ comparison, rangeStart, rangeEnd, now }));
+    const records = usageRecords(attributeUsage({ comparison, rangeStart, rangeEnd, now, assignments: this.assignments?.prints }));
     await this.usageLog.save(records, {
       at: now,
       totalRecalculation: { from: dates[0], to: dates.at(-1), prints: records.length, skippedPrints: all.length - prints.length },

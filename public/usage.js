@@ -144,10 +144,11 @@ function renderTiles() {
       : [`${all.countedPrints} prints since ${fmtDate(all.since)}`,
         all.lastTotalRecalculation ? `recalculated ${fmtDateTime(all.lastTotalRecalculation.at)}` : null].filter(Boolean).join(' · ');
   $('#tiles').replaceChildren(
-    tile('icon-ok', '✓', 'Filament counted', v(fmtGrams(t?.countedGrams)), t ? `${t.countedPrints} prints inside reservations` : 'Needs the Design Hub agenda'),
+    tile('icon-ok', '✓', 'Filament counted', v(fmtGrams(t?.countedGrams)), !t ? 'Needs the Design Hub agenda'
+      : [`${t.countedPrints - t.assignedPrints} prints inside reservations`, t.assignedPrints ? `${t.assignedPrints} assigned` : null].filter(Boolean).join(' · ')),
     tile('icon-info', 'i', 'Members', v(String(t?.users)), t ? `${printing} printed something` : ''),
     tile('icon-partial', '!', 'Not counted', v(fmtGrams(t?.excludedGrams)), t ? `${t.excludedPrints} prints more than half outside their reservation` : ''),
-    tile('icon-bad', '✕', 'No reservation', v(fmtGrams(t?.unattributedGrams)), t ? `${t.unattributedPrints} prints not charged to anyone` : ''),
+    tile('icon-bad', '✕', 'No reservation', v(fmtGrams(t?.unattributedGrams)), t ? `${t.unattributedPrints} prints not charged or assigned to anyone` : ''),
     tile('icon-info', 'Σ', 'All-time total', all?.since ? fmtGrams(all.countedGrams) : '—', totalNote),
   );
 }
@@ -246,6 +247,26 @@ function printRows(u) {
           : el('span', { className: 'status' }, icon('icon-ok', '✓'), 'Counted'))));
     }
   }
+  // Prints with no reservation that staff assigned to this member.
+  const assigned = u.list.filter((p) => p.assignedTo);
+  if (assigned.length) {
+    rows.push(el('tr', { className: 'booking-row' },
+      el('th', { scope: 'rowgroup', colspan: String(cols.length) },
+        el('span', { text: 'Assigned prints with no reservation' }),
+        el('span', { className: 'muted', text: ` · ${plural(u.assignedPrints, 'print')} · ${fmtGrams(u.assignedGrams)}` }))));
+    for (const p of assigned) {
+      rows.push(el('tr', {},
+        el('td', { className: 'time', text: fmtDateTime(p.start) }),
+        el('td', { text: `${p.title} · ${p.printer}` }),
+        el('td', { text: (METHOD[p.method] || (() => p.status))(p) }),
+        el('td', { className: 'num' },
+          p.usedGrams == null ? '—' : fmtGrams(p.usedGrams),
+          p.estimateGrams != null && p.usedGrams !== p.estimateGrams ? el('span', { className: 'muted', text: ` of ${fmtGrams(p.estimateGrams)}` }) : null),
+        el('td', { className: 'num', text: '—' }),
+        el('td', { title: `Assigned ${fmtDateTime(p.assignedTo.at)}` },
+          el('span', { className: 'status' }, icon('icon-info', '→'), 'Assigned'))));
+    }
+  }
   return el('table', { className: 'detail-table' },
     el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { scope: 'col', className: i === 3 || i === 4 ? 'num' : null, text: h })))),
     el('tbody', {}, rows));
@@ -270,15 +291,17 @@ function renderUsers() {
   const rows = [];
   for (const u of users) {
     const open = state.expanded.has(u.name);
+    const expandable = u.bookings.length > 0 || u.list.length > 0;
     const detailId = `detail-${rows.length}`;
     rows.push(el('tr', { className: open ? 'is-open' : null },
       el('td', {},
         el('button', {
           className: 'expand-btn', type: 'button', 'aria-expanded': String(open), 'aria-controls': detailId,
-          disabled: !u.bookings.length,
+          disabled: !expandable,
           onclick: () => { if (open) state.expanded.delete(u.name); else state.expanded.add(u.name); renderUsers(); },
-        }, el('span', { className: 'chev', 'aria-hidden': 'true', text: u.bookings.length ? (open ? '▾' : '▸') : '' }), u.name),
-        u.isEvent ? el('span', { className: 'tag', text: 'Event' }) : null),
+        }, el('span', { className: 'chev', 'aria-hidden': 'true', text: expandable ? (open ? '▾' : '▸') : '' }), u.name),
+        u.isEvent ? el('span', { className: 'tag', text: 'Event' }) : null,
+        u.assignedPrints ? el('span', { className: 'tag', title: 'Prints with no reservation that staff assigned to this member', text: `${u.assignedPrints} assigned` }) : null),
       el('td', { className: 'num col-res', text: String(u.reservations) }),
       el('td', { className: 'num', text: String(u.prints) }),
       el('td', { className: 'num usage-cell' },
@@ -352,19 +375,75 @@ const NO_RESERVATION = {
   'mostly-outside': 'Under 10% inside a reservation',
 };
 
+// Every name on the page, for the "Charge to" suggestions.
+function memberNames() {
+  const names = new Set([...state.data.users.map((u) => u.name), ...(state.data.allTime?.members || []).map((m) => m.name)]);
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+// Charges a print with no reservation to `name`, or removes the assignment
+// when `name` is empty, then reloads the range.
+async function assignPrint(printId, name) {
+  setBusy(true);
+  try {
+    const res = await fetch('/api/usage/assign', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printId, name }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error([json.error?.message, json.error?.hint].filter(Boolean).join(' ') || `HTTP ${res.status}`);
+  } catch (err) {
+    setBusy(false);
+    $('#banners').prepend(banner('icon-bad', '✕', name ? 'Could not assign the print' : 'Could not remove the assignment', err.message));
+    return;
+  }
+  await load();
+}
+
+// The "Charge to" cell: who the print is assigned to, or a name box.
+function assignCell(p) {
+  if (p.assignedTo) {
+    return el('td', {}, el('div', { className: 'assign-cell' },
+      el('span', { className: 'status', title: `Assigned ${fmtDateTime(p.assignedTo.at)}` }, icon('icon-info', '→'), p.assignedTo.name),
+      el('button', {
+        className: 'btn btn-small', type: 'button', 'aria-label': `Remove the assignment of ${p.title} to ${p.assignedTo.name}`,
+        onclick: () => assignPrint(p.id, ''),
+      }, 'Remove')));
+  }
+  const input = el('input', {
+    type: 'text', list: 'member-names', placeholder: 'Member name', maxlength: '100', autocomplete: 'off',
+    'aria-label': `Member to charge ${p.title} to`,
+  });
+  return el('td', {},
+    el('form', {
+      className: 'assign-form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const name = input.value.trim();
+        if (name) assignPrint(p.id, name);
+      },
+    }, input, el('button', { className: 'btn btn-small', type: 'submit' }, 'Assign')));
+}
+
 function renderUnattributed() {
   const u = state.data.unattributed;
-  $('#unattributed-sum').textContent = state.data.available ? `${u.prints} prints · ${fmtGrams(u.grams)}` : '';
-  $('#unattributed').replaceChildren(u.list.length
+  // Prints assigned by hand are listed here too, so they can be changed.
+  const assigned = state.data.users.flatMap((m) => m.list.filter((p) => p.assignedTo));
+  const list = [...u.list, ...assigned].sort((a, b) => ms(a.start) - ms(b.start));
+  $('#unattributed-sum').textContent = state.data.available
+    ? [`${u.prints} prints · ${fmtGrams(u.grams)}`, assigned.length ? `${assigned.length} assigned` : null].filter(Boolean).join(' · ')
+    : '';
+  $('#member-names').replaceChildren(...memberNames().map((name) => el('option', { value: name })));
+  $('#unattributed').replaceChildren(list.length
     ? el('table', {},
-      el('thead', {}, el('tr', {}, ['Started', 'Printer', 'Print', 'Status', 'Filament', 'Why'].map((h, i) => el('th', { scope: 'col', className: i === 4 ? 'num' : null, text: h })))),
-      el('tbody', {}, u.list.map((p) => el('tr', {},
+      el('thead', {}, el('tr', {}, ['Started', 'Printer', 'Print', 'Status', 'Filament', 'Why', 'Charge to'].map((h, i) => el('th', { scope: 'col', className: i === 4 ? 'num' : null, text: h })))),
+      el('tbody', {}, list.map((p) => el('tr', { className: p.assignedTo ? 'is-assigned' : null },
         el('td', { className: 'time', text: fmtDateTime(p.start) }),
         el('td', { text: p.printer }),
         el('td', { text: p.title }),
         el('td', { text: (METHOD[p.method] || (() => p.status))(p) }),
         el('td', { className: 'num', text: fmtGrams(p.usedGrams) }),
-        el('td', { className: 'muted', text: NO_RESERVATION[p.noReservationReason] || NO_RESERVATION.none })))))
+        el('td', { className: 'muted', text: NO_RESERVATION[p.noReservationReason] || NO_RESERVATION.none }),
+        assignCell(p)))))
     : el('p', { className: 'empty', text: 'Every print in this range overlapped a reservation.' }));
 }
 

@@ -573,6 +573,51 @@ describe('filament usage by user', () => {
     assert.deepEqual(after.users.map((u) => u.name), ['Sam Lee']);
   });
 
+  it('charges a print with no reservation to the member staff assign it to', async () => {
+    const { api, dir } = await live();
+    const first = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.deepEqual(first.unattributed.list.map((p) => p.id), ['bb-3']);
+
+    // JSON only, so another site can't assign prints with a plain form post.
+    const form = await fetch(`${api.base}/api/usage/assign`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'printId=bb-3&name=Sam',
+    });
+    assert.equal(form.status, 415);
+    const bad = await api.post('/api/usage/assign', { printId: '../x', name: 'Sam' });
+    assert.equal(bad.status, 400);
+
+    const r = await api.post('/api/usage/assign', { printId: 'bb-3', name: 'Sam Lee' });
+    assert.equal(r.status, 200);
+    const assigned = await r.json();
+    assert.equal(assigned.assignment.name, 'Sam Lee');
+    // The all-time totals take it in at once, before any recalculation.
+    assert.deepEqual(assigned.allTime.members.map((m) => [m.name, m.prints, m.grams, m.assignedGrams]).sort(),
+      [['Jane Doe', 2, 120, 0], ['Sam Lee', 1, 40, 40]]);
+    assert.equal(assigned.allTime.unattributedPrints, 0);
+
+    const data = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    const sam = data.users.find((u) => u.name === 'Sam Lee');
+    assert.deepEqual([sam.prints, sam.grams, sam.assignedPrints, sam.reservations], [1, 40, 1, 0]);
+    assert.deepEqual([data.unattributed.prints, data.totals.assignedGrams], [0, 40]);
+    const saved = JSON.parse(await fs.readFile(path.join(dir, 'assignments.json'), 'utf8'));
+    assert.equal(saved.prints['bb-3'].name, 'Sam Lee');
+    const usage = JSON.parse(await fs.readFile(path.join(dir, 'usage.json'), 'utf8'));
+    const rec = Object.values(usage.prints).find((p) => p.id === 'bb-3');
+    assert.deepEqual([rec.counted, rec.assignedTo.name, rec.reservation], [true, 'Sam Lee', null]);
+
+    // Kept across restarts, and used by Recalculate total.
+    const { api: restarted } = await live({}, dir);
+    const total = await (await restarted.post('/api/usage/recalculate-total', {})).json();
+    assert.ok(total.allTime.members.some((m) => m.name === 'Sam Lee' && m.grams === 40));
+
+    // An empty name removes the assignment.
+    const removed = await (await restarted.post('/api/usage/assign', { printId: 'bb-3', name: '' })).json();
+    assert.equal(removed.assignment, null);
+    assert.ok(!removed.allTime.members.some((m) => m.name === 'Sam Lee'));
+    const after = await (await restarted.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.deepEqual(after.unattributed.list.map((p) => p.id), ['bb-3']);
+  });
+
   it('recalculates the all-time total from saved data only', async () => {
     const { api, up } = await live({}, null, { collect: false });
     // Nothing saved yet.

@@ -61,6 +61,7 @@
           A print counts toward the reservation it started in, if it started in its first half or up to <span id="grace-min">15</span> minutes before it;
           otherwise toward the reservation it overlaps most. A print more than half outside the member's reservation isn't counted.
           Cancelled prints count for the share of their estimated time they ran.
+          Prints with no reservation count for a member when staff assign them below.
         </p>
       </div>
       <div id="users" class="table-wrap usage-wrap"></div>
@@ -83,7 +84,13 @@
     <section class="card" aria-labelledby="unattributed-title">
       <details id="unattributed-details">
         <summary><h2 id="unattributed-title">Prints with no reservation</h2> <span id="unattributed-sum" class="muted"></span></summary>
+        <p class="muted rules assign-help">
+          These aren't charged to anyone. If you know whose print it was, type their name under Charge to and press Assign:
+          its filament then counts toward that member's usage. Use the name exactly as Design Hub shows it, so it adds to their other prints.
+          A reservation found later, for example after Recalculate, takes precedence.
+        </p>
         <div id="unattributed" class="table-wrap"></div>
+        <datalist id="member-names"></datalist>
       </details>
     </section>
   </main>
