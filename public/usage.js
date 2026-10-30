@@ -321,7 +321,7 @@ function renderUsers() {
   $('#users').replaceChildren(el('table', { className: 'usage-table' },
     el('thead', {}, el('tr', {},
       sortHeader('Name', 'name'),
-      el('th', { scope: 'col', className: 'num col-res', text: 'Reservations' }),
+      sortHeader('Reservations', 'reservations', 'num col-res'),
       sortHeader('Prints', 'prints', 'num'),
       sortHeader('Filament used', 'grams', 'num'),
       sortHeader('All time', 'total', 'num'),
@@ -554,7 +554,7 @@ async function init() {
   $('#from').value = valid(params.get('from')) ? params.get('from') : shift($('#to').value, -29);
   $('#search').value = params.get('q') || '';
   const [key, dir] = (params.get('sort') || '').split('-');
-  if (['name', 'prints', 'grams', 'total'].includes(key) && ['asc', 'desc'].includes(dir)) state.sort = { key, dir };
+  if (['name', 'reservations', 'prints', 'grams', 'total'].includes(key) && ['asc', 'desc'].includes(dir)) state.sort = { key, dir };
   const [allKey, allDir] = (params.get('allsort') || '').split('-');
   if (['name', 'prints', 'grams', 'last'].includes(allKey) && ['asc', 'desc'].includes(allDir)) state.allSort = { key: allKey, dir: allDir };
 
