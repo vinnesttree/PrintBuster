@@ -15,7 +15,7 @@ async function start(env, { collect = true, ...opts } = {}) {
   // Keep the saved reservations in the test's own folder, never in data/.
   if (env.PRINT_LOG_PATH && !env.RESERVATION_LOG_PATH) {
     const dir = path.dirname(env.PRINT_LOG_PATH);
-    env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json') };
+    env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json'), ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json') };
   }
   const app = await createApp(loadConfig(env, ['node', 'server.js']), opts);
   if (collect) await app.locals.collector.runNow();
@@ -302,6 +302,11 @@ describe('print log', () => {
       DESIGNHUB_PASSWORD: 'secret',
       BAMBU_ACCESS_TOKEN: 'env-token',
       PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
+      // Some tests here call createApp directly; keep their saved files in
+      // the test's folder too, never in data/.
+      RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'),
+      USAGE_LOG_PATH: path.join(dir, 'usage.json'),
+      ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'),
       CACHE_SECONDS: '0',
     };
     return { dir, up, env };
