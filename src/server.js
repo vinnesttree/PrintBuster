@@ -12,6 +12,7 @@ import { PrintLog } from './printlog.js';
 import { ReservationArchive } from './reservations.js';
 import { UsageLog } from './usagelog.js';
 import { CompareService } from './service.js';
+import { sourceHealth, SOURCES, staleAfterMs, UptimeKumaPusher } from './uptime.js';
 import { isIsoDate, shiftDate, todayIn } from './time.js';
 
 function notConfigured(code, message, hint) {
@@ -52,6 +53,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   // knows someone is watching, and how it tells them new data is in.
   const streams = new Set();
   const send = (res, event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const kuma = new UptimeKumaPusher(config.uptimeKumaPush, { fetch, demo: config.demo });
   const collector = new Collector({
     run: () => service.collect(),
     activeMs: config.pollActiveMinutes * 60000,
@@ -60,6 +62,8 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     onRun: () => {
       const status = collector.status();
       for (const res of streams) send(res, 'update', status);
+      // Not awaited: a slow monitor must not hold up the next collection.
+      if (kuma.configured) kuma.push(service.collected);
     },
   });
   service.attachCollector(collector);
@@ -68,6 +72,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   app.disable('x-powered-by');
   app.locals.service = service;
   app.locals.collector = collector;
+  app.locals.kuma = kuma;
   // Ends every open event stream, so the server can close.
   app.locals.closeStreams = () => {
     for (const res of streams) res.end();
@@ -85,6 +90,24 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
 
   // Liveness probe for container healthchecks; stays reachable behind APP_PASSWORD.
   app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+  // Whether the last collection could read each upstream source, for uptime
+  // monitors such as Uptime Kuma: 200 when up, 503 when down, not yet
+  // checked, or no longer being checked. Like /healthz they need no login,
+  // so they say only up or down and an error code, never names or messages.
+  const staleMs = staleAfterMs({ activeMs: config.pollActiveMinutes * 60000, idleMs: config.pollIdleMinutes * 60000 });
+  const health = (source) => sourceHealth(service.collected, source, { now: now(), staleMs });
+  app.get('/healthz/sources', (req, res) => {
+    const sources = Object.keys(SOURCES).map(health);
+    const ok = sources.every((s) => s.ok);
+    res.status(ok ? 200 : 503).json({ ok, sources });
+  });
+  for (const source of Object.keys(SOURCES)) {
+    app.get(`/healthz/${source}`, (req, res) => {
+      const result = health(source);
+      res.status(result.ok ? 200 : 503).json(result);
+    });
+  }
 
   // Optional basic auth: the page shows member names from an admin view.
   if (config.appPassword) {
@@ -213,6 +236,8 @@ async function main() {
       if (!config.designhub.configured) console.warn('Design Hub credentials are missing; that source will show an error.');
       if (!config.bambu.configured) console.warn('Bambu credentials are missing; that source will show an error.');
     }
+    const pushes = Object.entries(config.uptimeKumaPush).filter(([, u]) => u).map(([s]) => s);
+    if (pushes.length) console.log(`Reporting to Uptime Kuma after each collection: ${pushes.join(', ')}.`);
   });
   app.locals.collector.start();
 
@@ -226,6 +251,7 @@ async function main() {
       await app.locals.service.printLog?.queue;
       await app.locals.service.reservationArchive?.queue;
       await app.locals.service.usageLog?.queue;
+      await app.locals.kuma.pending;
       process.exit(0);
     });
     setTimeout(() => process.exit(0), 5000).unref();

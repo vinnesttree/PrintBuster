@@ -73,6 +73,8 @@ describe('config', () => {
     assert.throws(() => loadConfig({ BAMBU_REGION: 'eu' }, []), /BAMBU_REGION/);
     assert.throws(() => loadConfig({ FLAG_WEIGHT_GRAMS: '-5' }, []), /FLAG_WEIGHT_GRAMS/);
     assert.throws(() => loadConfig({ FLAG_DURATION_HOURS: 'abc' }, []), /FLAG_DURATION_HOURS/);
+    assert.throws(() => loadConfig({ UPTIME_KUMA_PUSH_BAMBU: 'kuma.local/api/push/x' }, []), /UPTIME_KUMA_PUSH_BAMBU/);
+    assert.throws(() => loadConfig({ UPTIME_KUMA_PUSH_DESIGNHUB: 'ftp://kuma/api/push/x' }, []), /UPTIME_KUMA_PUSH_DESIGNHUB/);
   });
 
   it('reads the large-print thresholds, defaulting to 200 g and 12 h', () => {
@@ -210,6 +212,64 @@ describe('live mode', () => {
     const health = await api.get('/healthz');
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
+  });
+
+  it('reports whether each source is up for uptime monitors, without a login', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
+    const up = upstream('token');
+    up.hub.password = 'changed';
+    const api = await start({ ...env(dir), BAMBU_ACCESS_TOKEN: 'env-token', APP_PASSWORD: 'p@ss' }, { fetch: up.fetch, now: () => NOW });
+    const hub = await api.get('/healthz/designhub');
+    assert.equal(hub.status, 503);
+    assert.deepEqual(await hub.json(), {
+      source: 'designhub', name: 'Design Hub (Studio Manager)', ok: false, status: 'down', checkedAt: '2026-10-27T23:00:00.000Z', code: 'designhub_auth',
+    });
+    const bambu = await api.get('/healthz/bambu');
+    assert.equal(bambu.status, 200);
+    assert.equal((await bambu.json()).status, 'up');
+    const all = await api.get('/healthz/sources');
+    assert.equal(all.status, 503);
+    assert.deepEqual((await all.json()).sources.map((s) => [s.source, s.ok]), [['designhub', false], ['bambu', true]]);
+  });
+
+  it('answers 503 before the first collection and once collections have stopped', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
+    let clock = NOW;
+    const api = await start({ ...env(dir), BAMBU_ACCESS_TOKEN: 'env-token' }, { fetch: upstream('token').fetch, now: () => clock, collect: false });
+    assert.equal((await (await api.get('/healthz/bambu')).json()).status, 'pending');
+    await api.app.locals.collector.runNow();
+    assert.equal((await api.get('/healthz/bambu')).status, 200);
+    // The default schedule collects at least every 15 minutes.
+    clock += 36 * 60000;
+    const stale = await api.get('/healthz/bambu');
+    assert.equal(stale.status, 503);
+    assert.equal((await stale.json()).status, 'stale');
+  });
+
+  it('pushes each source to its Uptime Kuma push URL after every collection', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
+    const up = upstream('verifyCode');
+    const pushes = [];
+    const fetch = (input, init) => {
+      const url = new URL(String(input));
+      if (url.hostname !== 'kuma.test') return up.fetch(input, init);
+      pushes.push([url.pathname, url.searchParams.get('status'), url.searchParams.get('msg')]);
+      return Promise.resolve(Response.json({ ok: true }));
+    };
+    const api = await start({
+      ...env(dir),
+      UPTIME_KUMA_PUSH_DESIGNHUB: 'https://kuma.test/api/push/hub?status=up&msg=OK&ping=',
+      UPTIME_KUMA_PUSH_BAMBU: 'https://kuma.test/api/push/bambu?status=up&msg=OK&ping=',
+    }, { fetch, now: () => NOW });
+    await api.app.locals.kuma.pending;
+    assert.deepEqual(pushes.sort(), [
+      ['/api/push/bambu', 'down', 'Bambu emailed a verification code to s***@example.com. Enter it to finish signing in.'],
+      ['/api/push/hub', 'up', 'OK'],
+    ]);
+    pushes.length = 0;
+    await api.post('/api/bambu/code', { code: '123456' });
+    await api.app.locals.kuma.pending;
+    assert.deepEqual(pushes.sort(), [['/api/push/bambu', 'up', 'OK'], ['/api/push/hub', 'up', 'OK']]);
   });
 });
 
