@@ -6,6 +6,7 @@
   <title>Admin · PrintBuster</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='9' height='4' rx='1' fill='%232a78d6'/%3E%3Crect x='5' y='9' width='10' height='4' rx='1' fill='%23d03b3b'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
+  <script src="live.js" defer></script>
   <script src="admin.js" defer></script>
 </head>
 <body>
@@ -28,7 +29,34 @@
   <main class="admin-main">
     <div id="banners" aria-live="polite"></div>
 
-    <section class="card" aria-labelledby="import-title">
+    <section id="collect" class="card" aria-labelledby="collect-title">
+      <div class="card-head">
+        <div>
+          <h2 id="collect-title">Data collection</h2>
+          <p class="muted">Reads recent Bambu prints and yesterday's, today's and tomorrow's reservations.</p>
+        </div>
+        <p id="schedule" class="muted rules"></p>
+      </div>
+      <ul id="collect-status" class="admin-status"></ul>
+      <div class="control-group admin-actions">
+        <button id="collect-now" class="btn" type="button">Collect now</button>
+        <span id="collect-msg" class="muted" role="status"></span>
+      </div>
+    </section>
+
+    <section id="bambu" class="card" aria-labelledby="bambu-title">
+      <h2 id="bambu-title">Bambu sign-in</h2>
+      <p id="bambu-status" class="muted saved-summary"></p>
+      <form id="bambu-form" class="control-group admin-actions" hidden>
+        <label class="sr-only" for="bambu-code">Verification code</label>
+        <input id="bambu-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" placeholder="Code" required>
+        <button id="bambu-verify" class="btn btn-primary" type="submit">Verify</button>
+        <button id="bambu-restart" class="btn" type="button">Send a new code</button>
+      </form>
+      <p id="bambu-msg" class="muted saved-summary" role="status"></p>
+    </section>
+
+    <section id="import" class="card" aria-labelledby="import-title">
       <div class="card-head">
         <div>
           <h2 id="import-title">Import reservations</h2>
@@ -38,6 +66,7 @@
           Use this to fill in days before PrintBuster started saving reservations, or to pick up corrections made in Design Hub.
           Each day is one agenda request, read two at a time. The import keeps running if you leave this page.
           Days saved after they ended are final; leave "Skip" ticked to read only the days that aren't.
+          Untick it to read every day again.
         </p>
       </div>
       <form id="import-form" class="admin-form">
@@ -52,7 +81,7 @@
         </div>
         <div class="control-group admin-options">
           <label class="check"><input id="skip-final" type="checkbox" checked> Skip days already saved as final</label>
-          <label class="check"><input id="recalc-total" type="checkbox" checked> Recalculate all-time usage afterwards</label>
+          <label class="check"><input id="after-recalc" type="checkbox" checked> Recalculate all-time usage afterwards</label>
         </div>
         <div class="control-group">
           <button id="start" class="btn btn-primary" type="submit">Import</button>
@@ -72,6 +101,23 @@
     <section class="card" aria-labelledby="saved-title">
       <h2 id="saved-title">Saved reservations</h2>
       <p id="saved" class="muted saved-summary"></p>
+    </section>
+
+    <section id="usage" class="card" aria-labelledby="usage-title">
+      <div class="card-head">
+        <div>
+          <h2 id="usage-title">Filament usage</h2>
+          <p id="usage-status" class="muted"></p>
+        </div>
+        <p class="muted rules">
+          Recalculates every saved print against the saved reservations, with no Design Hub or Bambu requests, and saves the results.
+          Use it after the usage rules change, or to bring the all-time totals up to date.
+        </p>
+      </div>
+      <div class="control-group admin-actions">
+        <button id="recalc-total" class="btn" type="button">Recalculate total</button>
+        <span id="usage-msg" class="muted" role="status"></span>
+      </div>
     </section>
   </main>
 </body>

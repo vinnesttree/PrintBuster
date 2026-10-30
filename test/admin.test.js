@@ -197,3 +197,35 @@ describe('admin: bulk reservation import', () => {
     assert.match(await (await fetch(`${base}/usage.html`)).text(), /href="admin.html"/);
   });
 });
+
+describe('admin: collection and status', () => {
+  it('reports the last collection and Bambu sign-in, and collects on request', async () => {
+    const api = await live({}, { collect: false });
+    const before = await (await api.get('/api/admin/status')).json();
+    assert.deepEqual([before.demo, before.collected, before.bambu.configured], [false, null, true]);
+    assert.equal(before.usageLog.prints, 0);
+
+    // JSON only, so another site can't start collections with a form post.
+    const form = await fetch(`${api.base}/api/admin/collect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: '',
+    });
+    assert.equal(form.status, 415);
+    assert.equal(api.agendaDates().length, 0);
+
+    const r = await api.post('/api/admin/collect', {});
+    assert.equal(r.status, 200);
+    const after = await r.json();
+    assert.equal(after.collected.at, new Date(NOW).toISOString());
+    assert.deepEqual([after.collected.designhub, after.collected.bambu], [{ ok: true }, { ok: true }]);
+    assert.equal(after.bambu.authenticated, true);
+    assert.ok(api.agendaDates().includes('2026-10-27'));
+  });
+
+  it('says which source failed, without the raw error object', async () => {
+    const api = await live({ password: 'changed' });
+    const { collected } = await (await api.get('/api/admin/status')).json();
+    assert.equal(collected.bambu.ok, true);
+    assert.equal(collected.designhub.ok, false);
+    assert.match(collected.designhub.error.message, /rejected the username or password/);
+  });
+});

@@ -16,8 +16,12 @@ export const MAX_USAGE_DAYS = 366;
 // recalculating a range that includes them.
 const ARCHIVE_DAYS_PER_POLL = 3;
 const ARCHIVE_LOOKBACK_DAYS = 92;
-// The Refresh buttons start a new collection unless one ran this recently.
+// "Collect now" starts a new collection unless one ran this recently.
 const REFRESH_MIN_AGE_MS = 15 * 1000;
+// After the waterfall fails to read a day that isn't saved, it waits this
+// long before asking Design Hub for that day again, so open pages don't
+// retry on every live update while Design Hub is down.
+const MISSING_DAY_RETRY_MS = 60 * 1000;
 
 // The per-print results of attributeUsage, as saved in the usage log.
 const usageRecords = (usage) => [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
@@ -66,6 +70,8 @@ export class CompareService {
     this.pollError = null;
     this.hubError = null;
     this.lastFetch = null;
+    // Days the waterfall could not read: date -> { at, error }.
+    this.missingDayFailures = new Map();
     // The latest server-side collection: what it found and which agenda days
     // it keeps current. Set the collector with attachCollector().
     this.collected = null;
@@ -76,9 +82,9 @@ export class CompareService {
     this.collector = collector;
   }
 
-  // The Refresh buttons: collect now, unless a collection ran in the last
-  // few seconds; any number of presses share one run. Page loads never
-  // collect; they read what is saved.
+  // The admin page's "Collect now": collect now, unless a collection ran in
+  // the last few seconds; any number of presses share one run. Page loads
+  // never collect; they read what is saved.
   async refreshNow() {
     if (this.collector) await this.collector.ensureFresh(REFRESH_MIN_AGE_MS);
   }
@@ -161,13 +167,14 @@ export class CompareService {
     return { reservations, skipped };
   }
 
-  // One agenda day, from the saved reservations. Pages never make Design Hub
-  // requests: a day that isn't saved yet throws `not_saved` (or the error
-  // that kept the collection from saving it). Only Refresh (`force`) and
-  // Recalculate read Design Hub here, for days the server's collection
-  // doesn't keep current (Recalculate re-reads every day). Demo mode, whose
-  // agenda is generated locally, makes any day on request.
-  async agendaDay(date, { force = false, recalculate = false }) {
+  // One agenda day, from the saved reservations. A day that isn't saved yet
+  // throws `not_saved` (or the error that kept the collection from saving
+  // it), unless `fillMissing` (the waterfall) reads it from Design Hub once;
+  // a failed read is retried after a minute at the earliest. Otherwise only
+  // `force` and Recalculate read Design Hub here, for days the server's
+  // collection doesn't keep current (Recalculate re-reads every day). Demo
+  // mode, whose agenda is generated locally, makes any day on request.
+  async agendaDay(date, { force = false, recalculate = false, fillMissing = false }) {
     const saved = this.reservationArchive?.get(date);
     const fromSaved = (from, error) => ({
       reservations: saved.reservations, skipped: saved.skipped || [], fetchedAt: saved.fetchedAt, from, error,
@@ -179,16 +186,22 @@ export class CompareService {
     if (!force && !recalculate && !this.config.demo) {
       if (saved) return fromSaved('saved');
       if (this.collected?.days.has(date) && !this.collected.designhub.ok) throw this.collected.designhub.error;
-      throw new SourceError(`The reservations for ${date} haven't been saved yet.`, {
-        code: 'not_saved', hint: 'Press Refresh to read them from Design Hub.',
-      });
+      if (!fillMissing) {
+        throw new SourceError(`The reservations for ${date} haven't been saved yet.`, {
+          code: 'not_saved', hint: 'Import them on the Admin page.',
+        });
+      }
+      const failed = this.missingDayFailures.get(date);
+      if (failed && this.now() - failed.at < MISSING_DAY_RETRY_MS) throw failed.error;
     }
     try {
-      // Presses within a few seconds of each other share one read.
+      // Requests within a few seconds of each other share one read.
       const day = await this.cached(`hubday:${date}`, () => this.fetchAgendaDay(date), recalculate, REFRESH_MIN_AGE_MS);
+      this.missingDayFailures.delete(date);
       return { ...day, fetchedAt: new Date(this.now()).toISOString(), from: 'designhub' };
     } catch (err) {
       if (saved) return fromSaved('stale', err);
+      if (fillMissing) this.missingDayFailures.set(date, { at: this.now(), error: err });
       throw err;
     }
   }
@@ -237,7 +250,7 @@ export class CompareService {
     // the previous evening.
     const hubDays = [shiftDate(isoDate, -1), isoDate];
     const [hub, cloud] = await Promise.all([
-      Promise.all(hubDays.map((d) => this.agendaDay(d, { force })))
+      Promise.all(hubDays.map((d) => this.agendaDay(d, { force, fillMissing: true })))
         .then((got) => ({ ok: true, got }), (error) => ({ ok: false, error })),
       this.bambuFor(`bambu:${isoDate}`, { sinceMs, untilMs, force }),
     ]);

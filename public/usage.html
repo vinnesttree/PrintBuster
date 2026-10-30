@@ -37,9 +37,6 @@
           <button class="btn" type="button" data-days="90">90 days</button>
           <button class="btn" type="button" data-days="365">1 year</button>
         </div>
-        <button id="refresh" class="btn" type="button" title="Re-read today's reservations and recent prints">Refresh</button>
-        <button id="recalc" class="btn" type="button" title="Re-read this range's reservations from Design Hub, recalculate its usage and save it">Recalculate</button>
-        <button id="recalc-total" class="btn" type="button" title="Recalculate all-time usage from saved prints and reservations only, without asking Design Hub">Recalculate total</button>
       </div>
       <div class="control-group">
         <label class="sr-only" for="search">Search by name</label>
@@ -77,7 +74,7 @@
         </div>
         <p class="muted rules">
           Every member's usage over all saved data, under the same rules. It updates as date ranges are viewed or recalculated;
-          Recalculate total redoes every saved print.
+          Recalculate total, on the Admin page, redoes every saved print.
         </p>
       </div>
       <div id="alltime" class="table-wrap usage-wrap"></div>
@@ -89,7 +86,7 @@
         <p class="muted rules assign-help">
           These aren't charged to anyone. If you know whose print it was, type their name under Charge to and press Assign:
           its filament then counts toward that member's usage. Use the name exactly as Design Hub shows it, so it adds to their other prints.
-          A reservation found later, for example after Recalculate, takes precedence.
+          A reservation found later, for example after re-importing the day on the Admin page, takes precedence.
         </p>
         <div id="unattributed" class="table-wrap"></div>
         <datalist id="member-names"></datalist>

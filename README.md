@@ -18,9 +18,16 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 
-The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 366 days). Search by name and sort by name, reservation count, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. Next to the range figures, an **All time** column and tile show each member's total over all saved data. Below, the **All-time totals** table lists every member with saved usage, including those with no reservation in the selected range, with their prints, filament used, materials, prints not counted and last print. The name search and event checkbox apply to it too, and it sorts by name, prints, filament used or last print. **Recalculate** re-reads the selected range's reservations from Design Hub, recalculates and saves the result. **Recalculate total** recalculates every saved print from saved data only. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
+The **Filament usage** page (`/usage.html`) totals the filament each member used in their reservations over a date range (last 30 days by default, up to 366 days). Search by name and sort by name, reservation count, print count or filament used. Expand a member to see each of their reservations with every print charged to it, and whether each print counted. Next to the range figures, an **All time** column and tile show each member's total over all saved data. Below, the **All-time totals** table lists every member with saved usage, including those with no reservation in the selected range, with their prints, filament used, materials, prints not counted and last print. The name search and event checkbox apply to it too, and it sorts by name, prints, filament used or last print. The page only reads saved data; the tasks that ask Design Hub or Bambu, or recalculate saved usage, are on the Admin page. See [Filament usage rules](#filament-usage-rules) and [Saved reservations and usage](#saved-reservations-and-usage).
 
-The **Admin** page (`/admin.html`) holds admin tasks. For now that is **Import reservations**, which reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations). The page will later also manage logins. Until then it is protected only by `APP_PASSWORD`, like the other pages.
+The **Admin** page (`/admin.html`) holds every button that makes PrintBuster ask Design Hub or Bambu for data, or recalculate saved usage:
+
+- **Data collection** shows when the server last collected and whether it could read each source. **Collect now** collects at once.
+- **Bambu sign-in** shows whether PrintBuster is signed in to Bambu, and takes the code when Bambu asks for one (see [Bambu sign-in codes](#bambu-sign-in-codes)).
+- **Import reservations** reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations).
+- **Filament usage** has **Recalculate total**.
+
+The page will later also manage logins. Until then it is protected only by `APP_PASSWORD`, like the other pages.
 
 ## Quick start
 
@@ -110,7 +117,7 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 
 ### Bambu sign-in codes
 
-Bambu often emails a verification code when an account signs in from a new place. When it does, PrintBuster shows a box at the top of the page. Type in the code from the email. Accounts with two-factor authentication get the same box for their authenticator code.
+Bambu often emails a verification code when an account signs in from a new place. When it does, the waterfall and usage pages show a notice linking to **Bambu sign-in** on the Admin page. Type in the code from the email there and press **Verify**. **Send a new code** asks Bambu for another. Accounts with two-factor authentication get the same box for their authenticator code.
 
 The resulting token is saved to `data/bambu-token.json` (git-ignored, readable only by the file's owner). It lasts about 3 months, so restarts don't ask again.
 
@@ -180,23 +187,22 @@ The server, not the browser, fetches data from Design Hub and Bambu, on its own 
 
 Each collection reads Bambu's printers and recent prints into the print log. It reads yesterday's (until it's final), today's and tomorrow's agenda into the saved reservations. It also saves a few finished days that are still missing, back to the day before the print log began.
 
-**Pages only ever read saved data:** the print log, the saved reservations and usage, and what the last collection found. Loading or reloading a page, changing the date or range, and the live updates never make a request to Design Hub or Bambu, so ten viewers cause no more requests than one. Only these do:
+**Pages read saved data:** the print log, the saved reservations and usage, and what the last collection found. Loading or reloading a page, changing the date or range, and the live updates make no request to Design Hub or Bambu, so ten viewers cause no more requests than one. Only these do:
 
 - the server's schedule;
-- **Refresh**;
-- **Recalculate** on the usage page, which re-reads its range;
-- **Import reservations** on the Admin page, which reads its range;
-- signing in to Bambu with an emailed code.
+- the waterfall, once, for a day whose reservations aren't saved yet (below);
+- **Collect now** and **Import reservations** on the Admin page;
+- signing in to Bambu with an emailed code, also on the Admin page.
 
 How it fits together:
 
 - **How the server knows a page is open.** While a page is visible, it holds a connection to `/api/events`. A page in a background tab or a minimized window lets go of it, and so stops counting as open.
 - **How pages learn about new data.** After each collection the server sends an update over that connection, and every open page redraws. The waterfall's **Live updates** box turns this off for that page.
 - **When the first page opens.** The server switches to the 2-minute schedule. If its last collection was more than 2 minutes ago, the next one is already due and runs at once.
-- **Refresh.** It starts a collection, unless one ran in the last 15 seconds, and reads any day on screen that isn't saved.
+- **Collect now.** On the Admin page. It starts a collection, unless one ran in the last 15 seconds.
 - **The status line.** "Checked 7:58 PM" shows when the server last collected. Hover over it for the schedule and how many pages are open.
-- **Days that aren't saved.** A future date beyond tomorrow, or a past day from before the print log, shows "Reservations for this day aren't saved yet" until someone presses Refresh. The usage page lists any unsaved days in its range and leaves their prints out, rather than counting them as unreserved.
-- **Saved days outside the collection.** A future day saved earlier by Refresh shows "Reservations as saved …" with the time it was read.
+- **Days that aren't saved.** When the waterfall shows a day whose reservations aren't saved, such as a future date beyond tomorrow or a past day from before the print log, it reads that day (and the day before) from Design Hub and saves them, so later views don't ask again. If Design Hub can't be reached, the page shows the error and waits at least a minute before asking for that day again, however many pages are open. The usage page doesn't do this: it lists any unsaved days in its range and leaves their prints out, rather than counting them as unreserved. Use **Import reservations** on the Admin page to read them.
+- **Saved days outside the collection.** A day the collection doesn't keep current, saved earlier by the waterfall or an import, shows "Reservations as saved …" with the time it was read. Import it again to pick up changes.
 - **Errors.** If a collection fails, the pages show the error, and the server logs it once rather than on every run.
 - **Monitoring.** Each collection's result for Design Hub and Bambu is also available to uptime monitors. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md).
 
@@ -269,10 +275,10 @@ All three files are in `data/`, on the Docker volume, and readable only by the f
 - **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation (or which member staff assigned it to), grams used, whether it counted and why.
 - **`assignments.json`** holds the prints with no reservation that staff assigned to a member: the print id, the member's name and when it was assigned. Assigning or removing updates `usage.json` at once, so the all-time totals change without a recalculation. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
 
-The buttons:
+The Admin page's buttons:
 
-- **Refresh** asks the server to collect now (yesterday and today, and recent prints).
-- **Recalculate** works on the selected range. It re-reads every day in the range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. It then recalculates and saves both files. A 90-day range means about 90 agenda requests, and a year about 366, which can take several minutes. For a long range, the Admin page's [import](#importing-reservations) does the same reading in the background.
+- **Collect now** asks the server to collect now (yesterday, today and tomorrow, and recent prints).
+- **Import reservations** with **Skip days already saved as final** unticked re-reads every day in a range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. See [Importing reservations](#importing-reservations).
 - **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
 
 `usage.json` records when each kind of recalculation last ran and for which dates. In demo mode all three are kept in memory only.
@@ -282,7 +288,7 @@ The buttons:
 The server's collection saves finished days a few at a time, and only back to the day before the print log began, up to 92 days ago. To fill in more than that at once, or to pick up corrections made in Design Hub across many days, use **Import reservations** on the Admin page:
 
 1. Pick **From** and **To** (at most 366 days). The default is the 30 days up to yesterday.
-2. **Skip days already saved as final** (ticked by default) reads only days that aren't saved yet or were saved before they ended. Untick it to read every day again, as Recalculate does, so corrections in Design Hub replace the saved copy.
+2. **Skip days already saved as final** (ticked by default) reads only days that aren't saved yet or were saved before they ended. Untick it to read every day again, so corrections in Design Hub replace the saved copy.
 3. **Recalculate all-time usage afterwards** (ticked by default) runs **Recalculate total** once the import ends, so the all-time totals include the imported days.
 4. Press **Import**.
 
@@ -306,7 +312,7 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/admin/import[/stop], /api/events, /api/config, /api/bambu/*, /healthz/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/admin/status, /api/admin/collect, /api/admin/import[/stop], /api/events, /api/config, /api/bambu/*, /healthz/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
