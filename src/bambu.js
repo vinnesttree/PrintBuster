@@ -56,6 +56,20 @@ export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {
   // minute of) its startTime; the slicer estimate gives the expected finish.
   let estimated = false;
   let finishUnknown = false;
+  // How long a cancelled or failed print actually ran, before the minimum
+  // footprint below; its filament is prorated from this.
+  let ranSeconds = null;
+  if (status === 'failed') {
+    if (Number.isFinite(end)) {
+      ranSeconds = Math.max(0, (end - start) / 1000);
+    } else {
+      // Cancelled with no end time recorded: how long it ran is unknown, so
+      // it is drawn to its estimated end and charged in full.
+      finishUnknown = true;
+      estimated = true;
+      end = start + (estimateMs || MIN_PRINT_MS);
+    }
+  }
   const open = !Number.isFinite(end) || end - start <= MIN_PRINT_MS;
   if (open && status !== 'finished' && status !== 'failed') {
     estimated = true;
@@ -89,6 +103,9 @@ export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {
     finishUnknown,
     overdue: status === 'running' && end < nowMs,
     estimateMinutes: estimateMs ? Math.round(estimateMs / 60000) : null,
+    // Unrounded, for prorating cancelled and running prints.
+    estimateSeconds: estimateMs ? estimateMs / 1000 : null,
+    ranSeconds,
     // All three are slice estimates from Bambu, not measured usage: an aborted
     // print keeps the full estimate.
     weightGrams: Number(task.weight) > 0 ? round1(Number(task.weight)) : null,

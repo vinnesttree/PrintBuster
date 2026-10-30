@@ -693,6 +693,46 @@ describe('filament usage by user', () => {
     assert.equal(agendaDates().length, 6, 'nothing left to save');
   });
 
+  it('adds the interpolated share of cancelled prints to the member, in the range and all time', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-'));
+    const up = createMockUpstream({
+      hub: { reservations: [{ name: 'Cara', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T17:00' }] },
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }],
+        tasks: [
+          // Cancelled after 45 of a planned 180 minutes: a quarter of 120 g.
+          task(1, 'D-ADA', '2026-10-26T09:15', '2026-10-26T10:00', { status: 3, costTime: 10800, weight: 120,
+            amsDetailMapping: [{ filamentType: 'PLA', weight: 80 }, { filamentType: 'PETG', weight: 40 }] }),
+          // Cancelled 30 seconds into a 90-second job: a third of 9 g.
+          task(2, 'D-ADA', '2026-10-26T11:00:00', '2026-10-26T11:00:30', { status: 3, costTime: 90, weight: 9 }),
+          // Cancelled with no end time recorded: charged in full.
+          { ...task(3, 'D-ADA', '2026-10-26T13:00', null, { status: 3, costTime: 3600, weight: 20 }), endTime: null },
+        ],
+      },
+    });
+    const api = await start({
+      DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
+      BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
+    }, { fetch: up.fetch, now: () => NOW });
+
+    const r = await api.get('/api/usage?from=2026-10-26&to=2026-10-26');
+    assert.equal(r.status, 200);
+    const data = await r.json();
+    const cara = data.users.find((u) => u.name === 'Cara');
+    assert.deepEqual(cara.list.map((p) => [p.id, p.method, p.fraction, p.usedGrams]), [
+      ['bb-1', 'cancelled', 0.25, 30], ['bb-2', 'cancelled', 0.333, 3], ['bb-3', 'cancelled-end-unknown', 1, 20],
+    ]);
+    assert.deepEqual([cara.prints, cara.grams, cara.excludedPrints], [3, 53, 0]);
+    assert.deepEqual(cara.materials, { PLA: 20, PETG: 10, Unknown: 23 });
+    assert.deepEqual(data.allTime.members.map((m) => [m.name, m.prints, m.grams]), [['Cara', 3, 53]]);
+
+    // The waterfall draws them too, instead of failing on the missing end.
+    const day = await api.get('/api/compare?date=2026-10-26');
+    assert.equal(day.status, 200);
+    const noEnd = (await day.json()).prints.find((p) => p.id === 'bb-3');
+    assert.deepEqual([noEnd.status, noEnd.finishUnknown, noEnd.end], ['failed', true, '2026-10-26T19:00:00.000Z']);
+  });
+
   it('attributes nothing when the agenda cannot be read', async () => {
     const { api } = await live({ password: 'changed' });
     const data = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();

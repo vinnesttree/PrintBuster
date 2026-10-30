@@ -44,6 +44,20 @@ describe('usedFraction', () => {
     const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:30', { status: 'failed', estimateMinutes: null });
     assert.deepEqual(usedFraction(p, NOW), { fraction: 1, method: 'cancelled-no-estimate' });
   });
+  it('interpolates from the exact estimate and the time it actually ran', () => {
+    // A 90-second job cancelled after 30 seconds: drawn as a minute, and
+    // its estimate shown as 2 minutes, but a third of it was used.
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:01', {
+      status: 'failed', estimateMinutes: 2, estimateSeconds: 90, ranSeconds: 30,
+    });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 1 / 3, method: 'cancelled' });
+  });
+  it('charges the full estimate when a cancelled print has no recorded end', () => {
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T16:00', {
+      status: 'failed', estimateMinutes: 120, estimateSeconds: 7200, ranSeconds: null, finishUnknown: true, estimated: true,
+    });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 1, method: 'cancelled-end-unknown' });
+  });
   it('charges a running print for the time so far', () => {
     const p = print('r', 'D-ADA', '2026-10-27T19:00', '2026-10-27T21:00', { status: 'running', estimated: true, estimateMinutes: 120 });
     assert.deepEqual(usedFraction(p, NOW), { fraction: 0.5, method: 'running' });

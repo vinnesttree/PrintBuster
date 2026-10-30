@@ -159,6 +159,7 @@ const METHOD = {
   finished: () => 'Finished',
   cancelled: (p) => `Cancelled or failed · ran ${pct(p.fraction)} of its estimated time`,
   'cancelled-no-estimate': () => 'Cancelled or failed · no time estimate, full amount',
+  'cancelled-end-unknown': () => 'Cancelled or failed · end time not recorded, full amount',
   running: (p) => `Printing · ${pct(p.fraction)} so far`,
   'running-no-estimate': () => 'Printing',
   'finish-unknown': () => 'Finish not recorded · full amount',

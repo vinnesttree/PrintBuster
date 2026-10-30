@@ -93,6 +93,20 @@ describe('normalizeTask', () => {
     const p = normalizeTask(task(10, 'DEV1', '2026-10-27T09:00', '2026-10-27T09:00', { status: 3 }), names, NOW);
     assert.equal(p.status, 'failed');
     assert.equal(Date.parse(p.end) - Date.parse(p.start), 60000);
+    assert.equal(p.ranSeconds, 0, 'prorated from the time it actually ran');
+  });
+
+  it('keeps how long a cancelled print ran, and its exact estimate', () => {
+    const p = normalizeTask(task(12, 'DEV1', '2026-10-27T09:00:00', '2026-10-27T09:00:30', { status: 3, costTime: 90 }), names, NOW);
+    assert.deepEqual([p.ranSeconds, p.estimateSeconds, p.estimateMinutes], [30, 90, 2]);
+  });
+
+  it('draws a cancelled print with no end time to its estimated end instead of failing', () => {
+    for (const endTime of [undefined, null, '', 'not a date']) {
+      const p = normalizeTask({ ...task(13, 'DEV1', '2026-10-27T09:00', null, { status: 3, costTime: 5400 }), endTime }, names, NOW);
+      assert.deepEqual([p.status, p.finishUnknown, p.estimated, p.ranSeconds], ['failed', true, true, null]);
+      assert.equal(Date.parse(p.end) - Date.parse(p.start), 5400 * 1000);
+    }
   });
 
   it('falls back to the task\'s device name and skips unusable tasks', () => {

@@ -30,13 +30,18 @@ const round1 = (n) => Math.round(n * 10) / 10;
 
 export const MAX_OUTSIDE_SHARE = 0.5;
 
-// The share of the estimated filament that was actually used, and why.
+// The share of the estimated filament that was actually used, and why. A
+// cancelled or failed print is interpolated linearly: the share of its
+// estimated print time that it ran.
 export function usedFraction(p, nowMs) {
-  const estimateMs = p.estimateMinutes ? p.estimateMinutes * 60000 : 0;
+  const estimateMs = p.estimateSeconds ? p.estimateSeconds * 1000 : p.estimateMinutes ? p.estimateMinutes * 60000 : 0;
   if (p.status === 'failed') {
     // Bambu reports failed and cancelled prints with the same status.
+    if (p.finishUnknown) return { fraction: 1, method: 'cancelled-end-unknown' };
     if (!estimateMs) return { fraction: 1, method: 'cancelled-no-estimate' };
-    return { fraction: Math.min(1, (ms(p.end) - ms(p.start)) / estimateMs), method: 'cancelled' };
+    // The time it actually ran, not the one-minute minimum it is drawn with.
+    const ranMs = p.ranSeconds != null ? p.ranSeconds * 1000 : ms(p.end) - ms(p.start);
+    return { fraction: Math.min(1, Math.max(0, ranMs) / estimateMs), method: 'cancelled' };
   }
   if (p.status === 'running') {
     if (!estimateMs) return { fraction: 1, method: 'running-no-estimate' };

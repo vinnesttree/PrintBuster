@@ -68,6 +68,7 @@ function statusChip(match) {
 }
 
 function bambuStatusText(p) {
+  if (p.finishUnknown && p.status === 'failed') return 'Failed or cancelled, end time not recorded';
   if (p.finishUnknown) return 'Finish not recorded (was printing when last checked)';
   if (p.status === 'running') {
     const when = fmtWhen(ms(p.end));
