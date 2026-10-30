@@ -181,13 +181,27 @@ describe('attributeUsage', () => {
   });
 
   it('charges nobody for a print that started outside every reservation and ran into one', () => {
+    // Middle at 9:50, before Ben's 10:00 booking.
     const out = usage(
       [res('r1', 'Ben', 'Archimedes', '2026-10-27T10:00', '2026-10-27T12:00')],
-      [print('p1', 'D-ARC', '2026-10-27T09:00', '2026-10-27T11:30', { weightGrams: 60 })],
+      [print('p1', 'D-ARC', '2026-10-27T09:00', '2026-10-27T10:40', { weightGrams: 60 })],
       { graceMinutes: 15 },
     );
     assert.deepEqual([out.byName.Ben.grams, out.byName.Ben.excludedPrints, out.byName.Ben.list.length], [0, 0, 0]);
     assert.deepEqual(out.unattributed.list.map((p) => [p.id, p.noReservationReason, p.usedGrams]), [['p1', 'started-outside', 60]]);
+  });
+
+  it('charges the reservation the middle of an early-started print falls in', () => {
+    // Started an hour before Ben's booking, middle at 10:15; 45 of 150
+    // minutes outside it with grace, so it counts.
+    const out = usage(
+      [res('r0', 'Amy', 'Archimedes', '2026-10-27T07:00', '2026-10-27T08:00'),
+        res('r1', 'Ben', 'Archimedes', '2026-10-27T10:00', '2026-10-27T12:00')],
+      [print('p1', 'D-ARC', '2026-10-27T09:00', '2026-10-27T11:30', { weightGrams: 60 })],
+      { graceMinutes: 15 },
+    );
+    assert.deepEqual([out.byName.Ben.grams, out.byName.Ben.list[0].reservation.id, out.byName.Ben.list[0].outsideShare], [60, 'r1', 0.3]);
+    assert.equal(out.unattributed.prints, 0);
   });
 
   it('charges nobody for a print with less than 10% inside a reservation', () => {

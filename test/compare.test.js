@@ -81,17 +81,18 @@ describe('buildComparison', () => {
     assert.equal(result.prints[0].match, 'unreserved');
   });
 
-  it("treats a print that started outside every reservation as unreserved, even if it ends in one", () => {
+  it("treats a print that started outside every reservation as unreserved when its middle isn't in one either", () => {
     // Ohm is booked 13:00-14:00. Started at 12:00, before the 15-minute
-    // grace period, and ran into the booking: no reservation, not a run-over.
+    // grace period, and ran into the booking; its middle (12:50) is before
+    // the booking: no reservation, not a run-over.
     const result = compare(
       [res('r1', 'Ohm', '2026-10-27T13:00', '2026-10-27T14:00')],
       [print('early', 'D-OHM', '2026-10-27T12:00', '2026-10-27T13:40'),
-        // 20 minutes early is still too early.
-        print('early20', 'D-OHM', '2026-10-27T12:40', '2026-10-27T13:50')],
+        // Middle at 12:58, still before the booking (grace doesn't count).
+        print('early-mid', 'D-OHM', '2026-10-27T12:30', '2026-10-27T13:26')],
     );
     const p = byId(result);
-    for (const id of ['early', 'early20']) {
+    for (const id of ['early', 'early-mid']) {
       assert.equal(p[id].match, 'unreserved', id);
       assert.equal(p[id].noReservationReason, 'started-outside', id);
       assert.deepEqual(p[id].matchedReservations.map((r) => r.id), ['r1'], 'whose booking it ran into');
@@ -104,13 +105,39 @@ describe('buildComparison', () => {
 
   it("treats a print started after one reservation ended and running into the next as unreserved", () => {
     // Started in the grace period after Amy's booking, before the grace
-    // period of Ben's.
+    // period of Ben's, with its middle (12:27) before Ben's starts.
     const result = compare(
       [res('a', 'Ada', '2026-10-27T09:00', '2026-10-27T12:00', { name: 'Amy' }),
         res('b', 'Ada', '2026-10-27T12:30', '2026-10-27T14:00', { name: 'Ben' })],
-      [print('p', 'D-ADA', '2026-10-27T12:05', '2026-10-27T13:30')],
+      [print('p', 'D-ADA', '2026-10-27T12:05', '2026-10-27T12:50')],
     );
     assert.deepEqual([result.prints[0].match, result.prints[0].noReservationReason], ['unreserved', 'started-outside']);
+  });
+
+  it('counts a print started before a reservation when its middle is inside it', () => {
+    const result = compare(
+      [res('r1', 'Ohm', '2026-10-27T13:00', '2026-10-27T14:00')],
+      [// 20 minutes early, middle at 13:15: ran outside its reservation.
+        print('early20', 'D-OHM', '2026-10-27T12:40', '2026-10-27T13:50'),
+        // Started 1.5 hours early, middle at 13:00 exactly.
+        print('long', 'D-OHM', '2026-10-27T11:30', '2026-10-27T14:30'),
+        // Middle at 14:00 exactly, the end of the booking: not inside it.
+        print('late-mid', 'D-OHM', '2026-10-27T12:30', '2026-10-27T15:30')],
+    );
+    const p = byId(result);
+    assert.deepEqual([p.early20.match, p.early20.uncoveredMinutes], ['partial', 5]);
+    assert.deepEqual([p.long.match, p.long.uncoveredMinutes], ['partial', 90]);
+    assert.deepEqual([p['late-mid'].match, p['late-mid'].noReservationReason], ['unreserved', 'started-outside']);
+  });
+
+  it("still treats a print under 10% inside as unreserved, even with its middle in a reservation", () => {
+    // A 20-hour print whose middle lands in a 30-minute booking: 1 hour of
+    // 20 inside, counting grace.
+    const result = compare(
+      [res('r1', 'Ada', '2026-10-27T12:00', '2026-10-27T12:30')],
+      [print('p', 'D-ADA', '2026-10-27T02:15', '2026-10-27T22:15')],
+    );
+    assert.deepEqual([result.prints[0].match, result.prints[0].noReservationReason], ['unreserved', 'mostly-outside']);
   });
 
   it('treats an overnight print started just after one booking ended as unreserved on the next day', () => {

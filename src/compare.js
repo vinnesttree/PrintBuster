@@ -126,12 +126,17 @@ export function buildComparison({
     // Reservations the print started in: from the grace period before one up
     // to its end. Starting after a reservation ended isn't starting in it.
     const startedIn = candidates.filter((r) => pStart >= ms(r.start) - graceMs - TOLERANCE_MS && pStart < ms(r.end));
+    // A print that started before a reservation still belongs to it if the
+    // middle of the print falls inside the reservation itself.
+    const midMs = pStart + (pEnd - pStart) / 2;
+    const midIn = candidates.filter((r) => midMs >= ms(r.start) && midMs < ms(r.end));
+    const inReservation = startedIn.length > 0 || midIn.length > 0;
     const matched = candidates.filter((r) => overlaps(pStart, pEnd, ms(r.start), ms(r.end)) || startedIn.includes(r));
     matched.forEach((r) => printedReservations.add(r.id));
 
     // A print is "partial" (ran outside its reservation) only if it started
-    // in one. A print that started outside every reservation has none, even
-    // when its end runs into someone's booking; so does one with less than
+    // in one or its middle is in one. Otherwise it has none, even when its
+    // end runs into someone's booking; so does one with less than
     // MIN_INSIDE_SHARE of its time inside reservations (grace included).
     let match;
     let gaps = [];
@@ -145,9 +150,9 @@ export function buildComparison({
       if (totalMs(gaps) < TOLERANCE_MS) gaps = [];
       const durationMs = Math.max(pEnd - pStart, 1);
       insideShare = Math.max(0, durationMs - totalMs(gaps)) / durationMs;
-      if (!startedIn.length || insideShare < MIN_INSIDE_SHARE) {
+      if (!inReservation || insideShare < MIN_INSIDE_SHARE) {
         match = 'unreserved';
-        if (matched.length) noReservationReason = startedIn.length ? 'mostly-outside' : 'started-outside';
+        if (matched.length) noReservationReason = inReservation ? 'mostly-outside' : 'started-outside';
         gaps = [[pStart, pEnd]];
       } else {
         match = gaps.length ? 'partial' : 'reserved';
