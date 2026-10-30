@@ -53,7 +53,7 @@ Within a minute both monitors should turn green. Each heartbeat shows `OK` and t
 Things to know:
 
 - **Alerts come at once.** PrintBuster sends `status=down` on the first failed collection. Recent Uptime Kuma versions treat an explicit `down` push as final and skip the monitor's **Retries**. If brief blips are too noisy, use pull monitors instead, where Kuma's Retries setting applies.
-- **Only collections push.** If you set both `POLL_ACTIVE_MINUTES` and `POLL_IDLE_MINUTES` to `0`, PrintBuster only collects on Refresh, so Kuma will report the monitors down.
+- **Only collections push.** If you set both `POLL_ACTIVE_MINUTES` and `POLL_IDLE_MINUTES` to `0`, PrintBuster only collects when someone presses **Collect now** on the Admin page, so Kuma will report the monitors down.
 - **PrintBuster must reach Kuma.** If Kuma runs in Docker on the same computer, use an address PrintBuster can reach, e.g. the computer's LAN address and Kuma's published port (`http://192.168.1.20:3001/api/push/…`). From inside PrintBuster's container, `127.0.0.1` means the container itself, not the computer.
 - **A failed push doesn't affect PrintBuster.** It logs `Uptime Kuma push for Bambu cloud failed: …` once, and `… resumed.` when it works again. An unknown or paused monitor shows as `HTTP 404: Monitor not found or not active.`
 - **Treat the push URLs like passwords.** Anyone with one can mark that monitor up or down.

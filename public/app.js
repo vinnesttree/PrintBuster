@@ -496,40 +496,10 @@ function banner(iconCls, icon, title, message, ...extra) {
     el('div', { className: 'banner-body' }, el('strong', { text: title }), message ? el('p', { text: message }) : null, ...extra));
 }
 
-function bambuCodeForm(kind, message) {
-  const input = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]*', 'aria-label': 'Verification code', required: true });
-  const submit = el('button', { className: 'btn btn-primary', type: 'submit', text: 'Verify' });
-  const restart = el('button', { className: 'btn', type: 'button', text: kind === 'tfa' ? 'Start over' : 'Send a new code' });
-  const error = el('p', { className: 'muted', role: 'status' });
-  const post = async (url, body) => {
-    submit.disabled = true;
-    restart.disabled = true;
-    error.textContent = '';
-    try {
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error?.message || `HTTP ${res.status}`);
-      return true;
-    } catch (err) {
-      error.textContent = err.message;
-      return false;
-    } finally {
-      submit.disabled = false;
-      restart.disabled = false;
-    }
-  };
-  const form = el('form', {
-    onsubmit: async (e) => {
-      e.preventDefault();
-      if (await post('/api/bambu/code', { code: input.value })) load({ force: true });
-    },
-  }, input, submit, restart);
-  restart.addEventListener('click', async () => {
-    if (await post('/api/bambu/restart')) {
-      error.textContent = kind === 'tfa' ? 'Started over. Enter the current code from your authenticator app.' : 'A new code is on its way.';
-    }
-  });
-  return banner('icon-info', 'i', kind === 'tfa' ? 'Bambu two-factor code needed' : 'Bambu verification code needed', message, form, error);
+// A notice that Bambu needs a sign-in code, which is entered on the Admin page.
+function bambuCodeNotice(kind, message) {
+  return banner('icon-info', 'i', kind === 'tfa' ? 'Bambu two-factor code needed' : 'Bambu verification code needed', message,
+    el('p', {}, el('a', { href: 'admin.html#bambu' }, 'Enter the code on the Admin page')));
 }
 
 function renderBanners() {
@@ -545,12 +515,7 @@ function renderBanners() {
     if (src.ok) continue;
     const code = src.error.code;
     if (code === 'bambu_code_required' || code === 'bambu_tfa_required') {
-      list.push(bambuCodeForm(code === 'bambu_tfa_required' ? 'tfa' : 'verifyCode', src.error.message));
-      continue;
-    }
-    // Pages show only saved data; this day hasn't been saved yet.
-    if (code === 'not_saved') {
-      list.push(banner('icon-info', 'i', 'Reservations for this day aren\u2019t saved yet', [src.error.message, src.error.hint].filter(Boolean).join(' ')));
+      list.push(bambuCodeNotice(code === 'bambu_tfa_required' ? 'tfa' : 'verifyCode', src.error.message));
       continue;
     }
     list.push(banner('icon-bad', '✕', `${names[key]} data unavailable`,
@@ -567,7 +532,7 @@ function renderBanners() {
   }
   if (sources.designhub.ok && sources.designhub.savedAt) {
     list.push(banner('icon-info', 'i', `Reservations as saved ${fmtWhen(ms(sources.designhub.savedAt))}`,
-      'The server keeps yesterday, today and tomorrow up to date; other days show what was saved. Press Refresh to read this day again.'));
+      'The server keeps yesterday, today and tomorrow up to date; other days show what was saved. To read this day again, import it on the Admin page.'));
   }
   if (sources.designhub.ok && sources.designhub.stale) {
     const e = sources.designhub.error;
@@ -702,13 +667,12 @@ function render() {
 // ---------------------------------------------------------------- data
 
 let loadSeq = 0;
-async function load({ force = false } = {}) {
+async function load() {
   const seq = ++loadSeq;
   state.loading = true;
   $('#chart-scroll').classList.add('is-loading');
-  $('#refresh').disabled = true;
   try {
-    const res = await fetch(`/api/compare?date=${encodeURIComponent(state.date)}${force ? '&refresh=1' : ''}`);
+    const res = await fetch(`/api/compare?date=${encodeURIComponent(state.date)}`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error?.message || `HTTP ${res.status}`);
     if (seq !== loadSeq) return;
@@ -722,7 +686,6 @@ async function load({ force = false } = {}) {
     if (seq === loadSeq) {
       state.loading = false;
       $('#chart-scroll').classList.remove('is-loading');
-      $('#refresh').disabled = false;
     }
   }
 }
@@ -777,7 +740,6 @@ async function init() {
   $('#prev-day').addEventListener('click', () => setDate(shift(state.date, -1)));
   $('#next-day').addEventListener('click', () => setDate(shift(state.date, 1)));
   $('#today').addEventListener('click', () => setDate(state.config.today));
-  $('#refresh').addEventListener('click', () => load({ force: true }));
   $('#only-bambu').addEventListener('change', renderChart);
   $('#show-idle').addEventListener('change', renderChart);
   $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked) autoRefresh(); });

@@ -353,15 +353,48 @@ describe('print log', () => {
     const { up, env } = await setup();
     const clock = at('2026-10-26T21:30:00-05:00');
     const api = await start(env, { fetch: up.fetch, now: () => clock });
-    // Oct 20 isn't saved; a page load doesn't read Design Hub, Refresh does.
-    const unsaved = await (await api.get('/api/compare?date=2026-10-20')).json();
-    assert.deepEqual([unsaved.sources.designhub.ok, unsaved.sources.designhub.error.code], [false, 'not_saved']);
-    assert.match(unsaved.sources.designhub.error.hint, /Refresh/);
-    const data = await (await api.get('/api/compare?date=2026-10-20&refresh=1')).json();
+    // Oct 20 and the day before aren't saved, so the waterfall reads them
+    // from Design Hub once and saves them.
+    const agendaDates = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
+    const before = agendaDates().length;
+    const data = await (await api.get('/api/compare?date=2026-10-20')).json();
+    assert.equal(data.sources.designhub.ok, true);
+    assert.deepEqual(agendaDates().slice(before).sort(), ['2026-10-19', '2026-10-20']);
+    await api.get('/api/compare?date=2026-10-20');
+    assert.equal(agendaDates().length, before + 2, 'saved now, so not read again');
     assert.equal(data.printsAvailable, false);
     assert.deepEqual(data.printGaps, [{ start: '2026-10-20T05:00:00.000Z', end: '2026-10-21T05:00:00.000Z' }]);
     assert.equal(data.reservations.length, 1);
     assert.equal(data.reservations[0].noPrint, false, 'no Bambu data, so no claim that nothing printed');
+  });
+
+  it('retries a day it could not read at most once a minute', async () => {
+    const { up, env } = await setup();
+    let clock = at('2026-10-26T21:30:00-05:00');
+    const api = await start(env, { fetch: up.fetch, now: () => clock });
+    // The session expires and the password no longer works.
+    up.hub.validSessions.clear();
+    up.hub.password = 'changed';
+    const hubCalls = () => up.calls.filter((c) => c.url.startsWith('https://hub.test/')).length;
+    const before = hubCalls();
+    const failed = await (await api.get('/api/compare?date=2026-10-20')).json();
+    assert.equal(failed.sources.designhub.ok, false);
+    assert.match(failed.sources.designhub.error.message, /rejected the username or password/);
+    const afterFirst = hubCalls();
+    assert.ok(afterFirst > before);
+
+    // A live update 30 seconds later shows the same error without asking.
+    clock += 30000;
+    const again = await (await api.get('/api/compare?date=2026-10-20')).json();
+    assert.equal(again.sources.designhub.ok, false);
+    assert.equal(hubCalls(), afterFirst);
+
+    // After a minute it tries again, and succeeds once the login works.
+    up.hub.password = 'secret';
+    clock += 31000;
+    const ok = await (await api.get('/api/compare?date=2026-10-20')).json();
+    assert.equal(ok.sources.designhub.ok, true);
+    assert.ok(hubCalls() > afterFirst);
   });
 
   it('shows logged prints when Bambu is unreachable', async () => {

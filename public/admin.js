@@ -1,7 +1,8 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
-const state = { config: null, status: null, timer: null };
+// `status` is the import's; `admin` is the collection, Bambu and usage.
+const state = { config: null, status: null, admin: null, timer: null };
 // How often the page checks on an import while one is running.
 const POLL_MS = 1000;
 
@@ -148,6 +149,102 @@ function render() {
   renderRangeNote();
 }
 
+// ---------------------------------------------------------------- collection, Bambu and usage
+
+const fmtClock = (iso) => new Intl.DateTimeFormat('en-US', { timeZone: state.config.timezone, hour: 'numeric', minute: '2-digit' })
+  .format(new Date(iso));
+
+function sourceItem(name, found) {
+  if (!found) return el('li', {}, icon('icon-info', 'i'), `${name}: not checked yet`);
+  return found.ok
+    ? el('li', {}, icon('icon-ok', '✓'), `${name}: read`)
+    : el('li', {}, icon('icon-bad', '✕'), `${name}: ${errorText(found.error)}`);
+}
+
+function renderAdmin() {
+  const a = state.admin;
+  const c = a.collected;
+  $('#schedule').textContent = scheduleText(a.collector);
+  $('#collect-status').replaceChildren(
+    el('li', {}, c ? `Last collected ${fmtDateTime(c.at)}` : 'Not collected yet',
+      a.collector.running ? ' · collecting now…' : '',
+      a.collector.nextRunAt ? ` · next ${fmtClock(a.collector.nextRunAt)}` : ''),
+    sourceItem('Design Hub', c?.designhub),
+    sourceItem('Bambu', c?.bambu),
+  );
+
+  const b = a.bambu;
+  const pending = !a.demo && b.pending;
+  $('#bambu-form').hidden = !pending;
+  $('#bambu-restart').textContent = b.pending === 'tfa' ? 'Start over' : 'Send a new code';
+  $('#bambu-status').textContent = a.demo ? 'Demo mode doesn\u2019t sign in to Bambu.'
+    : !b.configured ? 'Bambu sign-in isn\u2019t configured. Set BAMBU_EMAIL and BAMBU_PASSWORD, or BAMBU_ACCESS_TOKEN, in .env.'
+      : b.pending === 'tfa' ? 'Bambu needs the code from your two-factor authenticator app.'
+        : b.pending ? `Bambu emailed a verification code${b.email ? ` to ${b.email}` : ''}. Enter it to finish signing in.`
+          : b.authenticated ? `Signed in${b.email ? ` as ${b.email}` : ''}.`
+            : 'Not signed in yet. PrintBuster signs in at the next collection.';
+
+  const u = a.usageLog;
+  const last = u?.lastTotalRecalculation;
+  $('#usage-status').textContent = !u ? ''
+    : [`${plural(u.prints, 'print')} with saved usage`,
+      last ? `total last recalculated ${fmtDateTime(last.at)}` : 'total not recalculated yet'].join(' · ');
+}
+
+async function loadAdmin() {
+  try {
+    state.admin = await api('/api/admin/status');
+    renderAdmin();
+  } catch (err) {
+    $('#collect-msg').textContent = `Could not load the status: ${err.message}`;
+  }
+}
+
+// Runs `fn` with `button` disabled, showing its outcome in `msg`.
+async function action(button, msg, busyText, fn) {
+  button.disabled = true;
+  msg.textContent = busyText;
+  try {
+    msg.textContent = (await fn()) || '';
+  } catch (err) {
+    msg.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+const collectNow = () => action($('#collect-now'), $('#collect-msg'), 'Collecting…', async () => {
+  state.admin = await api('/api/admin/collect', {});
+  renderAdmin();
+  return `Collected ${fmtClock(state.admin.collected.at)}.`;
+});
+
+const recalculateTotal = () => action($('#recalc-total'), $('#usage-msg'), 'Recalculating…', async () => {
+  const { usageLog } = await api('/api/usage/recalculate-total', {});
+  state.admin.usageLog = usageLog;
+  renderAdmin();
+  return `Recalculated ${plural(usageLog.lastTotalRecalculation.prints, 'print')}.`;
+});
+
+async function bambuCode(e) {
+  e.preventDefault();
+  await action($('#bambu-verify'), $('#bambu-msg'), 'Checking the code…', async () => {
+    await api('/api/bambu/code', { code: $('#bambu-code').value });
+    $('#bambu-code').value = '';
+    return 'Signed in.';
+  });
+  await loadAdmin();
+}
+
+async function bambuRestart() {
+  const tfa = state.admin.bambu.pending === 'tfa';
+  await action($('#bambu-restart'), $('#bambu-msg'), '', async () => {
+    await api('/api/bambu/restart', {});
+    return tfa ? 'Started over. Enter the current code from your authenticator app.' : 'A new code is on its way.';
+  });
+  await loadAdmin();
+}
+
 // ---------------------------------------------------------------- data
 
 // Checks on the import every second while it runs.
@@ -173,7 +270,7 @@ async function startImport(e) {
   $('#start').disabled = true;
   try {
     state.status = await api('/api/admin/import', {
-      from, to, skipFinal: $('#skip-final').checked, recalculateTotal: $('#recalc-total').checked,
+      from, to, skipFinal: $('#skip-final').checked, recalculateTotal: $('#after-recalc').checked,
     });
     render();
   } catch (err) {
@@ -215,7 +312,13 @@ async function init() {
   $('#to').addEventListener('input', renderRangeNote);
   $('#import-form').addEventListener('submit', startImport);
   $('#stop').addEventListener('click', stopImport);
-  await poll();
+  $('#collect-now').addEventListener('click', collectNow);
+  $('#recalc-total').addEventListener('click', recalculateTotal);
+  $('#bambu-form').addEventListener('submit', bambuCode);
+  $('#bambu-restart').addEventListener('click', bambuRestart);
+  // Shows each collection's result as the server finishes it.
+  liveUpdates(loadAdmin);
+  await Promise.all([loadAdmin(), poll()]);
 }
 
 init().catch((err) => {

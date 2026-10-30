@@ -406,3 +406,8 @@ tr.is-assigned td { color: var(--text-2); }
 .progress-bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
 .progress-bar > span { display: block; height: 100%; width: 0; background: var(--res); transition: width .3s; }
 .saved-summary { margin-top: 6px; }
+.admin-status { list-style: none; margin: 4px 0 12px; padding: 0; display: grid; gap: 4px; color: var(--text-2); }
+.admin-status li { display: flex; align-items: center; gap: 8px; }
+.admin-status .icon { width: 16px; height: 16px; font-size: 10px; flex: none; }
+.admin-actions { margin-top: 10px; }
+#bambu-code { width: 9em; letter-spacing: .15em; }

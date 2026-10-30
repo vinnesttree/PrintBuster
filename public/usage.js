@@ -70,11 +70,14 @@ function applyTheme(theme) {
 
 // ---------------------------------------------------------------- banners and tiles
 
-function banner(iconCls, glyph, title, message) {
+function banner(iconCls, glyph, title, message, ...extra) {
   return el('div', { className: 'banner', role: iconCls === 'icon-bad' ? 'alert' : null },
     icon(iconCls, glyph),
-    el('div', { className: 'banner-body' }, el('strong', { text: title }), message ? el('p', { text: message }) : null));
+    el('div', { className: 'banner-body' }, el('strong', { text: title }), message ? el('p', { text: message }) : null, ...extra));
 }
+
+// A link to an admin task, for banners.
+const adminLink = (hash, text) => el('p', {}, el('a', { href: `admin.html${hash}` }, text));
 
 function renderBanners() {
   const d = state.data;
@@ -87,7 +90,8 @@ function renderBanners() {
     const e = d.sources.designhub.error;
     list.push(e.code === 'not_saved'
       ? banner('icon-info', 'i', 'Reservations for this range aren\u2019t saved yet',
-        'The server saves each day as it collects. Press Refresh to read these days from Design Hub now.')
+        'The server saves each day as it collects. To read these days from Design Hub now, import them on the Admin page.',
+        adminLink('#import', 'Import reservations'))
       : banner('icon-bad', '✕', 'Usage cannot be attributed without the Design Hub agenda',
         [e.message, e.hint].filter(Boolean).join(' ')));
   }
@@ -95,7 +99,8 @@ function renderBanners() {
   if (d.sources.designhub.ok && missing.length) {
     const shown = missing.slice(0, 5).map(fmtDay).join(', ') + (missing.length > 5 ? ` and ${missing.length - 5} more` : '');
     list.push(banner('icon-partial', '!', `Reservations for ${missing.length} day${missing.length === 1 ? '' : 's'} in this range aren\u2019t saved yet`,
-      `Prints on ${shown} aren't counted for anyone. Press Refresh to read those days from Design Hub.`));
+      `Prints on ${shown} aren't counted for anyone. To read those days from Design Hub, import them on the Admin page.`,
+      adminLink('#import', 'Import reservations')));
   }
   if (d.sources.designhub.ok && d.sources.designhub.staleDays) {
     const n = d.sources.designhub.staleDays;
@@ -112,8 +117,10 @@ function renderBanners() {
   }
   if (!d.sources.bambu.ok) {
     const e = d.sources.bambu.error;
+    const needsCode = e.code === 'bambu_code_required' || e.code === 'bambu_tfa_required';
     list.push(banner('icon-partial', '!', 'Bambu Cloud data unavailable',
-      [e.message, e.hint, d.sources.bambu.log ? 'Usage below comes from prints saved in the print log.' : null].filter(Boolean).join(' ')));
+      [e.message, e.hint, d.sources.bambu.log ? 'Usage below comes from prints saved in the print log.' : null].filter(Boolean).join(' '),
+      needsCode ? adminLink('#bambu', 'Enter the code on the Admin page') : null));
   }
   if (!d.demo && d.printGaps.length) {
     const since = d.sources.bambu.log?.since;
@@ -385,7 +392,6 @@ function memberNames() {
 // Charges a print with no reservation to `name`, or removes the assignment
 // when `name` is empty, then reloads the range.
 async function assignPrint(printId, name) {
-  setBusy(true);
   try {
     const res = await fetch('/api/usage/assign', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printId, name }),
@@ -393,7 +399,6 @@ async function assignPrint(printId, name) {
     const json = await res.json();
     if (!res.ok) throw new Error([json.error?.message, json.error?.hint].filter(Boolean).join(' ') || `HTTP ${res.status}`);
   } catch (err) {
-    setBusy(false);
     $('#banners').prepend(banner('icon-bad', '✕', name ? 'Could not assign the print' : 'Could not remove the assignment', err.message));
     return;
   }
@@ -458,9 +463,7 @@ function render() {
   renderAllTime();
   renderUnattributed();
   const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  $('#updated').textContent = state.data.recalculated
-    ? `Recalculated${state.data.demo ? '' : ' and saved'} ${time}`
-    : collectedText(state.data.collector) || `Updated ${time}`;
+  $('#updated').textContent = collectedText(state.data.collector) || `Updated ${time}`;
   $('#updated').title = scheduleText(state.data.collector);
 }
 
@@ -478,7 +481,7 @@ function saveUrl() {
 }
 
 let loadSeq = 0;
-async function load({ force = false, recalculate = false } = {}) {
+async function load() {
   const from = $('#from').value;
   const to = $('#to').value;
   if (!from || !to) return;
@@ -486,12 +489,9 @@ async function load({ force = false, recalculate = false } = {}) {
   const seq = ++loadSeq;
   state.loading = true;
   $('#users').classList.add('is-loading');
-  setBusy(true);
-  $('#updated').textContent = recalculate ? 'Recalculating… re-reading every day from Design Hub' : 'Loading…';
+  $('#updated').textContent = 'Loading…';
   try {
-    const res = recalculate
-      ? await fetch('/api/usage/recalculate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to }) })
-      : await fetch(`/api/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${force ? '&refresh=1' : ''}`);
+    const res = await fetch(`/api/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error?.message || `HTTP ${res.status}`);
     if (seq !== loadSeq) return;
@@ -499,46 +499,12 @@ async function load({ force = false, recalculate = false } = {}) {
     render();
   } catch (err) {
     if (seq !== loadSeq) return;
-    $('#banners').replaceChildren(banner('icon-bad', '✕', recalculate ? 'Could not recalculate filament usage' : 'Could not load filament usage', err.message));
+    $('#banners').replaceChildren(banner('icon-bad', '✕', 'Could not load filament usage', err.message));
     $('#updated').textContent = '';
   } finally {
     if (seq === loadSeq) {
       state.loading = false;
       $('#users').classList.remove('is-loading');
-      setBusy(false);
-    }
-  }
-}
-
-function setBusy(busy) {
-  for (const id of ['#refresh', '#recalc', '#recalc-total']) $(id).disabled = busy;
-}
-
-// Recalculates all-time usage from saved data only; the range shown is
-// unchanged.
-async function recalculateTotal() {
-  if (!state.data) return;
-  const seq = ++loadSeq;
-  state.loading = true;
-  setBusy(true);
-  $('#updated').textContent = 'Recalculating the all-time total from saved data…';
-  try {
-    const res = await fetch('/api/usage/recalculate-total', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const json = await res.json();
-    if (!res.ok) throw new Error([json.error?.message, json.error?.hint].filter(Boolean).join(' ') || `HTTP ${res.status}`);
-    if (seq !== loadSeq) return;
-    state.data.allTime = json.allTime;
-    render();
-    const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    $('#updated').textContent = `Total recalculated from saved data ${time}`;
-  } catch (err) {
-    if (seq !== loadSeq) return;
-    $('#banners').replaceChildren(banner('icon-bad', '✕', 'Could not recalculate the all-time total', err.message));
-    $('#updated').textContent = '';
-  } finally {
-    if (seq === loadSeq) {
-      state.loading = false;
-      setBusy(false);
     }
   }
 }
@@ -561,11 +527,8 @@ async function init() {
   $('#controls').addEventListener('submit', (e) => e.preventDefault());
   $('#from').addEventListener('change', () => load());
   $('#to').addEventListener('change', () => load());
-  $('#refresh').addEventListener('click', () => load({ force: true }));
-  $('#recalc').addEventListener('click', () => load({ recalculate: true }));
-  $('#recalc-total').addEventListener('click', recalculateTotal);
   // The server collects the data; reload the view when it says there is
-  // something new, unless a load or recalculation is under way.
+  // something new, unless a load is under way.
   liveUpdates(() => { if (state.data && !state.loading) load(); });
   for (const btn of document.querySelectorAll('.presets [data-days]')) {
     btn.addEventListener('click', () => {

@@ -209,7 +209,27 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     res.json(await service.assign(req.body?.printId, req.body?.name));
   });
 
-  // Admin tasks. The bulk import reads a date range's reservations from
+  // Admin tasks. The status of the server's collection and of the Bambu
+  // sign-in, and "Collect now".
+  const adminStatus = () => {
+    const found = service.collected;
+    const source = (s) => (s ? { ok: s.ok, ...(s.ok ? {} : { error: describeError(s.error) }) } : null);
+    return {
+      demo: config.demo,
+      collector: collector.status(),
+      collected: found ? { at: new Date(found.at).toISOString(), designhub: source(found.designhub), bambu: source(found.bambu) } : null,
+      bambu: bambuStatus(),
+      usageLog: service.usageLog ? service.usageLog.stats() : null,
+    };
+  };
+  app.get('/api/admin/status', (req, res) => res.json(adminStatus()));
+
+  app.post('/api/admin/collect', jsonOnly, async (req, res) => {
+    await service.refreshNow();
+    res.json(adminStatus());
+  });
+
+  // The bulk import reads a date range's reservations from
   // Design Hub in the background; the admin page polls its progress.
   app.get('/api/admin/import', (req, res) => res.json(importer.status()));
 
