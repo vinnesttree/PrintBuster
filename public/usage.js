@@ -348,7 +348,7 @@ function renderAllTime() {
 
 const NO_RESERVATION = {
   none: 'Overlapped no reservation',
-  'started-outside': 'Started outside a reservation, then ran into one',
+  'started-outside': 'Started outside a reservation, middle not in one either',
   'mostly-outside': 'Under 10% inside a reservation',
 };
 

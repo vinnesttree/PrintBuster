@@ -10,7 +10,8 @@
 // - It is charged to the reservation on its printer that it started in, if it
 //   started in the first half of that reservation (midpoint included) or in
 //   the grace period before it. Otherwise it is charged to the reservation on
-//   its printer that it overlaps most.
+//   its printer that the middle of the print falls in, else the one it
+//   overlaps most.
 // - It is not counted when more than half of its time is outside the
 //   holder's own reservations on that printer (with the grace period before
 //   and after each). This wins over the start rule: a print started in
@@ -55,7 +56,12 @@ export function chooseReservation(p, candidates, graceMs) {
     return start >= rStart - graceMs && start <= rStart + (ms(r.end) - rStart) / 2;
   });
   if (!startedIn.length) {
-    return candidates.reduce((best, r) => (overlap(r) > 0 && (!best || overlap(r) > overlap(best)) ? r : best), null);
+    // Then the reservation the middle of the print falls in, then the one
+    // it overlaps most.
+    const mid = start + (end - start) / 2;
+    const midIn = candidates.filter((r) => mid >= ms(r.start) && mid < ms(r.end));
+    const pool = midIn.length ? midIn : candidates.filter((r) => overlap(r) > 0);
+    return pool.reduce((best, r) => (!best || overlap(r) > overlap(best) ? r : best), null);
   }
   // A start inside a reservation beats one in the grace period before the
   // next; then the larger overlap wins.

@@ -229,18 +229,21 @@ Each print then gets one of these results:
 
 | Result | Rule |
 | --- | --- |
-| No reservation | The print didn't start in a reservation on its printer, or less than 10% of it was inside reservations (grace period included), or its printer can't be matched to any agenda model. A print that started outside every reservation and then ran into someone's booking is **No reservation**, not a run-over. |
-| Outside reservation | The print started in a reservation but spent more than a minute outside every reservation plus the grace period. Back-to-back reservations count as one block. |
-| Within reservation | The print started in a reservation and is fully covered by reservations plus the grace period. |
+| No reservation | The print isn't *in a reservation* on its printer (below), or less than 10% of it was inside reservations (grace period included), or its printer can't be matched to any agenda model. A print that started outside every reservation and only ran into someone's booking near its end is **No reservation**, not a run-over. |
+| Outside reservation | The print is in a reservation but spent more than a minute outside every reservation plus the grace period: it started early or ran late. Back-to-back reservations count as one block. |
+| Within reservation | The print is in a reservation and is fully covered by reservations plus the grace period. |
 
-"Started in a reservation" means it started between the grace period before a reservation (default 15 minutes) and that reservation's end. Starting after a reservation ended, even within the grace period after it, isn't starting in it. A print that started more than a minute too early counts as starting outside. Exactly 10% inside still counts as having a reservation. The tooltip and the flagged-prints table say which rule made a print "No reservation".
+A print is **in a reservation** if either of these holds:
+
+- **It started in one:** between the grace period before the reservation (default 15 minutes) and the reservation's end. Starting after a reservation ended, even within the grace period after it, isn't starting in it. A minute of tolerance applies.
+- **The middle of the print falls inside one:** halfway between its start and end, inside the reservation itself, not its grace period. So a print started early still counts when most of it ran in the booking; it shows as "Outside reservation" for the early part. Exactly 10% inside still counts as having a reservation. The tooltip and the flagged-prints table say which rule made a print "No reservation".
 
 ### Filament usage rules
 
 The usage page charges prints to reservation holders:
 
-- **A print that starts in the first half of a reservation**, or in the grace period (default 15 minutes) before it, is charged to that reservation, even if it then overlaps a later reservation more. The midpoint counts as the first half.
-- Any other print is charged to the reservation on its printer that it overlaps most.
+- **A print that starts in the first half of a reservation**, or in the grace period (default 15 minutes) before it, is charged to that reservation, even if it then overlaps a later reservation more. The reservation's own midpoint counts as its first half.
+- Any other print is charged to the reservation its middle falls in, else to the one on its printer that it overlaps most.
 - **A print more than half outside the member's reservation isn't counted.** "Outside" means outside that member's own reservations on that printer, each widened by the grace period, so back-to-back bookings by the same person count as one block. This rule wins over the first one: a print started in Amy's slot that mostly runs in Ben's is Amy's, and isn't counted. It is listed under the member as "Not counted", and nobody else is charged. Exactly half outside still counts.
 - **Every print in a reservation is tracked against it.** Expanding a member lists each reservation with its prints, grams and not-counted prints, including reservations with no prints.
 - **A cancelled or failed print** counts in proportion to how long it ran: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. If Bambu gave no time estimate, the full weight counts.
