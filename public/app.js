@@ -229,11 +229,17 @@ function reservationTooltip(r) {
 
 // ---------------------------------------------------------------- chart
 
+// Bambu's times have second precision, and a print can be logged as ending
+// a few seconds after the next one on the same printer started. Overlaps
+// shorter than this share a lane, so back-to-back prints butt up against
+// each other; longer ones get their own lane.
+const LANE_OVERLAP_TOLERANCE_MS = 60 * 1000;
+
 function assignLanes(items) {
   const ends = [];
   const lanes = new Map();
   for (const it of [...items].sort((a, b) => a.s - b.s)) {
-    let lane = ends.findIndex((end) => end <= it.s);
+    let lane = ends.findIndex((end) => end - LANE_OVERLAP_TOLERANCE_MS <= it.s);
     if (lane === -1) { lane = ends.length; ends.push(0); }
     ends[lane] = it.e;
     lanes.set(it.id, lane);
