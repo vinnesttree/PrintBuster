@@ -15,7 +15,7 @@ async function start(env, { collect = true, ...opts } = {}) {
   // Keep the saved reservations in the test's own folder, never in data/.
   if (env.PRINT_LOG_PATH && !env.RESERVATION_LOG_PATH) {
     const dir = path.dirname(env.PRINT_LOG_PATH);
-    env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json') };
+    env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json'), ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json') };
   }
   const app = await createApp(loadConfig(env, ['node', 'server.js']), opts);
   if (collect) await app.locals.collector.runNow();
@@ -302,6 +302,11 @@ describe('print log', () => {
       DESIGNHUB_PASSWORD: 'secret',
       BAMBU_ACCESS_TOKEN: 'env-token',
       PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
+      // Some tests here call createApp directly; keep their saved files in
+      // the test's folder too, never in data/.
+      RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'),
+      USAGE_LOG_PATH: path.join(dir, 'usage.json'),
+      ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'),
       CACHE_SECONDS: '0',
     };
     return { dir, up, env };
@@ -568,6 +573,51 @@ describe('filament usage by user', () => {
     assert.deepEqual(after.users.map((u) => u.name), ['Sam Lee']);
   });
 
+  it('charges a print with no reservation to the member staff assign it to', async () => {
+    const { api, dir } = await live();
+    const first = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.deepEqual(first.unattributed.list.map((p) => p.id), ['bb-3']);
+
+    // JSON only, so another site can't assign prints with a plain form post.
+    const form = await fetch(`${api.base}/api/usage/assign`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'printId=bb-3&name=Sam',
+    });
+    assert.equal(form.status, 415);
+    const bad = await api.post('/api/usage/assign', { printId: '../x', name: 'Sam' });
+    assert.equal(bad.status, 400);
+
+    const r = await api.post('/api/usage/assign', { printId: 'bb-3', name: 'Sam Lee' });
+    assert.equal(r.status, 200);
+    const assigned = await r.json();
+    assert.equal(assigned.assignment.name, 'Sam Lee');
+    // The all-time totals take it in at once, before any recalculation.
+    assert.deepEqual(assigned.allTime.members.map((m) => [m.name, m.prints, m.grams, m.assignedGrams]).sort(),
+      [['Jane Doe', 2, 120, 0], ['Sam Lee', 1, 40, 40]]);
+    assert.equal(assigned.allTime.unattributedPrints, 0);
+
+    const data = await (await api.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    const sam = data.users.find((u) => u.name === 'Sam Lee');
+    assert.deepEqual([sam.prints, sam.grams, sam.assignedPrints, sam.reservations], [1, 40, 1, 0]);
+    assert.deepEqual([data.unattributed.prints, data.totals.assignedGrams], [0, 40]);
+    const saved = JSON.parse(await fs.readFile(path.join(dir, 'assignments.json'), 'utf8'));
+    assert.equal(saved.prints['bb-3'].name, 'Sam Lee');
+    const usage = JSON.parse(await fs.readFile(path.join(dir, 'usage.json'), 'utf8'));
+    const rec = Object.values(usage.prints).find((p) => p.id === 'bb-3');
+    assert.deepEqual([rec.counted, rec.assignedTo.name, rec.reservation], [true, 'Sam Lee', null]);
+
+    // Kept across restarts, and used by Recalculate total.
+    const { api: restarted } = await live({}, dir);
+    const total = await (await restarted.post('/api/usage/recalculate-total', {})).json();
+    assert.ok(total.allTime.members.some((m) => m.name === 'Sam Lee' && m.grams === 40));
+
+    // An empty name removes the assignment.
+    const removed = await (await restarted.post('/api/usage/assign', { printId: 'bb-3', name: '' })).json();
+    assert.equal(removed.assignment, null);
+    assert.ok(!removed.allTime.members.some((m) => m.name === 'Sam Lee'));
+    const after = await (await restarted.get('/api/usage?from=2026-10-26&to=2026-10-26')).json();
+    assert.deepEqual(after.unattributed.list.map((p) => p.id), ['bb-3']);
+  });
+
   it('recalculates the all-time total from saved data only', async () => {
     const { api, up } = await live({}, null, { collect: false });
     // Nothing saved yet.
@@ -641,6 +691,46 @@ describe('filament usage by user', () => {
     assert.ok(['2026-10-19', '2026-10-26'].every((d) => service.reservationArchive.get(d)?.final));
     await service.archiveAgenda();
     assert.equal(agendaDates().length, 6, 'nothing left to save');
+  });
+
+  it('adds the interpolated share of cancelled prints to the member, in the range and all time', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-usage-'));
+    const up = createMockUpstream({
+      hub: { reservations: [{ name: 'Cara', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-10-26T09:00', end: '2026-10-26T17:00' }] },
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }],
+        tasks: [
+          // Cancelled after 45 of a planned 180 minutes: a quarter of 120 g.
+          task(1, 'D-ADA', '2026-10-26T09:15', '2026-10-26T10:00', { status: 3, costTime: 10800, weight: 120,
+            amsDetailMapping: [{ filamentType: 'PLA', weight: 80 }, { filamentType: 'PETG', weight: 40 }] }),
+          // Cancelled 30 seconds into a 90-second job: a third of 9 g.
+          task(2, 'D-ADA', '2026-10-26T11:00:00', '2026-10-26T11:00:30', { status: 3, costTime: 90, weight: 9 }),
+          // Cancelled with no end time recorded: charged in full.
+          { ...task(3, 'D-ADA', '2026-10-26T13:00', null, { status: 3, costTime: 3600, weight: 20 }), endTime: null },
+        ],
+      },
+    });
+    const api = await start({
+      DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
+      BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
+    }, { fetch: up.fetch, now: () => NOW });
+
+    const r = await api.get('/api/usage?from=2026-10-26&to=2026-10-26');
+    assert.equal(r.status, 200);
+    const data = await r.json();
+    const cara = data.users.find((u) => u.name === 'Cara');
+    assert.deepEqual(cara.list.map((p) => [p.id, p.method, p.fraction, p.usedGrams]), [
+      ['bb-1', 'cancelled', 0.25, 30], ['bb-2', 'cancelled', 0.333, 3], ['bb-3', 'cancelled-end-unknown', 1, 20],
+    ]);
+    assert.deepEqual([cara.prints, cara.grams, cara.excludedPrints], [3, 53, 0]);
+    assert.deepEqual(cara.materials, { PLA: 20, PETG: 10, Unknown: 23 });
+    assert.deepEqual(data.allTime.members.map((m) => [m.name, m.prints, m.grams]), [['Cara', 3, 53]]);
+
+    // The waterfall draws them too, instead of failing on the missing end.
+    const day = await api.get('/api/compare?date=2026-10-26');
+    assert.equal(day.status, 200);
+    const noEnd = (await day.json()).prints.find((p) => p.id === 'bb-3');
+    assert.deepEqual([noEnd.status, noEnd.finishUnknown, noEnd.end], ['failed', true, '2026-10-26T19:00:00.000Z']);
   });
 
   it('attributes nothing when the agenda cannot be read', async () => {

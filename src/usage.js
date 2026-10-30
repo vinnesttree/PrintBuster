@@ -19,6 +19,9 @@
 // - Bambu's weight is the slicer's estimate for the whole job. A cancelled or
 //   failed print is charged in proportion to how long it ran against the
 //   estimated print time; a print still running, for the time so far.
+// - A print with no reservation that staff assigned to a member (see
+//   assignments.js) is charged to that member and counted. A reservation
+//   always wins over an assignment.
 
 import { uncoveredSegments } from './compare.js';
 
@@ -27,13 +30,18 @@ const round1 = (n) => Math.round(n * 10) / 10;
 
 export const MAX_OUTSIDE_SHARE = 0.5;
 
-// The share of the estimated filament that was actually used, and why.
+// The share of the estimated filament that was actually used, and why. A
+// cancelled or failed print is interpolated linearly: the share of its
+// estimated print time that it ran.
 export function usedFraction(p, nowMs) {
-  const estimateMs = p.estimateMinutes ? p.estimateMinutes * 60000 : 0;
+  const estimateMs = p.estimateSeconds ? p.estimateSeconds * 1000 : p.estimateMinutes ? p.estimateMinutes * 60000 : 0;
   if (p.status === 'failed') {
     // Bambu reports failed and cancelled prints with the same status.
+    if (p.finishUnknown) return { fraction: 1, method: 'cancelled-end-unknown' };
     if (!estimateMs) return { fraction: 1, method: 'cancelled-no-estimate' };
-    return { fraction: Math.min(1, (ms(p.end) - ms(p.start)) / estimateMs), method: 'cancelled' };
+    // The time it actually ran, not the one-minute minimum it is drawn with.
+    const ranMs = p.ranSeconds != null ? p.ranSeconds * 1000 : ms(p.end) - ms(p.start);
+    return { fraction: Math.min(1, Math.max(0, ranMs) / estimateMs), method: 'cancelled' };
   }
   if (p.status === 'running') {
     if (!estimateMs) return { fraction: 1, method: 'running-no-estimate' };
@@ -99,7 +107,9 @@ function usedMaterials(p, fraction) {
   return p.weightGrams != null ? [{ type: 'Unknown', color: null, grams: round1(p.weightGrams * fraction) }] : [];
 }
 
-export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsideShare = MAX_OUTSIDE_SHARE }) {
+// `assignments` maps a print id to { name, at } for prints with no
+// reservation that staff charged to a member.
+export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsideShare = MAX_OUTSIDE_SHARE, assignments = null }) {
   const rowLabel = new Map(comparison.rows.map((r) => [r.key, r.label]));
   const bambuRows = new Set(comparison.rows.filter((r) => r.isBambu).map((r) => r.key));
   const graceMs = (comparison.graceMinutes || 0) * 60000;
@@ -114,7 +124,8 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
     if (!users.has(name)) {
       users.set(name, {
         name, isEvent: Boolean(isEvent), reservations: 0,
-        prints: 0, grams: 0, excludedPrints: 0, excludedGrams: 0, materials: {}, list: [], bookings: new Map(),
+        prints: 0, grams: 0, excludedPrints: 0, excludedGrams: 0, assignedPrints: 0, assignedGrams: 0,
+        materials: {}, list: [], bookings: new Map(),
       });
     }
     return users.get(name);
@@ -173,8 +184,23 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
       materials: usedMaterials(p, fraction),
       excluded: false,
       reservation: null,
+      assignedTo: null,
       noReservationReason: p.noReservationReason || null,
     };
+
+    const assigned = holder ? null : assignments?.get(p.id);
+    if (assigned) {
+      // Charged by hand: counted for the member, outside any booking.
+      record.assignedTo = { name: assigned.name, at: assigned.at };
+      const user = userFor(assigned.name, false);
+      user.prints++;
+      user.grams = round1(user.grams + (usedGrams || 0));
+      user.assignedPrints++;
+      user.assignedGrams = round1(user.assignedGrams + (usedGrams || 0));
+      addMaterials(user.materials, record.materials);
+      user.list.push(record);
+      continue;
+    }
 
     if (!holder) {
       unattributed.prints++;
@@ -218,6 +244,8 @@ export function attributeUsage({ comparison, rangeStart, rangeEnd, now, maxOutsi
       countedPrints: list.reduce((s, u) => s + u.prints, 0),
       excludedGrams: round1(list.reduce((s, u) => s + u.excludedGrams, 0)),
       excludedPrints: list.reduce((s, u) => s + u.excludedPrints, 0),
+      assignedGrams: round1(list.reduce((s, u) => s + u.assignedGrams, 0)),
+      assignedPrints: list.reduce((s, u) => s + u.assignedPrints, 0),
       unattributedGrams: unattributed.grams,
       unattributedPrints: unattributed.prints,
       printsWithoutWeight: weightMissing,

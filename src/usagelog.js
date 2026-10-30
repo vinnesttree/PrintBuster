@@ -67,16 +67,17 @@ export class UsageLog extends JsonFileStore {
     for (const r of this.prints.values()) {
       if (!out.since || Date.parse(r.start) < Date.parse(out.since)) out.since = r.start;
       const grams = r.usedGrams || 0;
-      if (!r.reservation) {
+      // A print with no reservation counts for the member staff assigned it to.
+      const name = r.reservation?.name ?? r.assignedTo?.name;
+      if (!name) {
         out.unattributedPrints++;
         out.unattributedGrams += grams;
         continue;
       }
-      const { name } = r.reservation;
       if (!members.has(name)) {
         members.set(name, {
-          name, isEvent: Boolean(r.reservation.isEvent), prints: 0, grams: 0, excludedPrints: 0, excludedGrams: 0,
-          materials: {}, lastPrint: null,
+          name, isEvent: Boolean(r.reservation?.isEvent), prints: 0, grams: 0, excludedPrints: 0, excludedGrams: 0,
+          assignedPrints: 0, assignedGrams: 0, materials: {}, lastPrint: null,
         });
       }
       const m = members.get(name);
@@ -84,6 +85,10 @@ export class UsageLog extends JsonFileStore {
       if (r.counted) {
         m.prints++;
         m.grams += grams;
+        if (!r.reservation) {
+          m.assignedPrints++;
+          m.assignedGrams += grams;
+        }
         for (const f of r.materials || []) m.materials[f.type] = (m.materials[f.type] || 0) + f.grams;
       } else {
         m.excludedPrints++;
@@ -94,6 +99,7 @@ export class UsageLog extends JsonFileStore {
       ...m,
       grams: round1(m.grams),
       excludedGrams: round1(m.excludedGrams),
+      assignedGrams: round1(m.assignedGrams),
       materials: Object.fromEntries(Object.entries(m.materials).map(([type, g]) => [type, round1(g)])),
     }));
     for (const m of list) {

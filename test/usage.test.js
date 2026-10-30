@@ -21,12 +21,12 @@ const print = (id, deviceId, start, end, extra = {}) => ({
   status: 'finished', estimated: false, finishUnknown: false, estimateMinutes: null, weightGrams: 100, filaments: [], ...extra,
 });
 
-function usage(reservations, prints, { graceMinutes = 0, now = NOW } = {}) {
+function usage(reservations, prints, { graceMinutes = 0, now = NOW, assignments = null } = {}) {
   const comparison = buildComparison({
     day: { date: '2026-10-27', start: new Date(rangeStart).toISOString(), end: new Date(rangeEnd).toISOString(), timezone: 'America/Chicago' },
     now, reservations, prints, devices, printerOrder: [], graceMinutes,
   });
-  const out = attributeUsage({ comparison, rangeStart, rangeEnd, now });
+  const out = attributeUsage({ comparison, rangeStart, rangeEnd, now, assignments });
   out.byName = Object.fromEntries(out.users.map((u) => [u.name, u]));
   return out;
 }
@@ -43,6 +43,20 @@ describe('usedFraction', () => {
   it('charges the full estimate when there is no estimated time to compare against', () => {
     const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:30', { status: 'failed', estimateMinutes: null });
     assert.deepEqual(usedFraction(p, NOW), { fraction: 1, method: 'cancelled-no-estimate' });
+  });
+  it('interpolates from the exact estimate and the time it actually ran', () => {
+    // A 90-second job cancelled after 30 seconds: drawn as a minute, and
+    // its estimate shown as 2 minutes, but a third of it was used.
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:01', {
+      status: 'failed', estimateMinutes: 2, estimateSeconds: 90, ranSeconds: 30,
+    });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 1 / 3, method: 'cancelled' });
+  });
+  it('charges the full estimate when a cancelled print has no recorded end', () => {
+    const p = print('c', 'D-ADA', '2026-10-27T14:00', '2026-10-27T16:00', {
+      status: 'failed', estimateMinutes: 120, estimateSeconds: 7200, ranSeconds: null, finishUnknown: true, estimated: true,
+    });
+    assert.deepEqual(usedFraction(p, NOW), { fraction: 1, method: 'cancelled-end-unknown' });
   });
   it('charges a running print for the time so far', () => {
     const p = print('r', 'D-ADA', '2026-10-27T19:00', '2026-10-27T21:00', { status: 'running', estimated: true, estimateMinutes: 120 });
@@ -293,5 +307,47 @@ describe('attributeUsage', () => {
       [print('p1', 'D-ADA', '2026-10-27T09:10', '2026-10-27T10:00', { weightGrams: null })],
     );
     assert.deepEqual([out.byName['Jane Doe'].prints, out.byName['Jane Doe'].grams, out.totals.printsWithoutWeight], [1, 0, 1]);
+  });
+});
+
+describe('assigned prints', () => {
+  const AT = '2026-10-28T09:00:00.000Z';
+
+  it('charges a print with no reservation to the member staff assigned it to', () => {
+    const out = usage(
+      [res('r1', 'Jane Doe', 'Ada', '2026-10-27T09:00', '2026-10-27T11:00')],
+      [
+        print('p1', 'D-ADA', '2026-10-27T09:10', '2026-10-27T10:40'),
+        print('p2', 'D-ADA', '2026-10-27T15:00', '2026-10-27T16:00', { weightGrams: 40, filaments: [{ type: 'PETG', grams: 40, color: null }] }),
+        print('p3', 'D-OHM', '2026-10-27T15:00', '2026-10-27T16:00', { weightGrams: 25 }),
+      ],
+      { assignments: new Map([['p2', { name: 'Jane Doe', at: AT }], ['p3', { name: 'Sam Lee', at: AT }]]) },
+    );
+    const jane = out.byName['Jane Doe'];
+    assert.deepEqual([jane.prints, jane.grams, jane.assignedPrints, jane.assignedGrams, jane.reservations], [2, 140, 1, 40, 1]);
+    assert.deepEqual(jane.materials, { Unknown: 100, PETG: 40 });
+    const p2 = jane.list.find((p) => p.id === 'p2');
+    assert.deepEqual([p2.reservation, p2.assignedTo, p2.excluded], [null, { name: 'Jane Doe', at: AT }, false]);
+    // Someone with no reservation at all gets a row of their own.
+    const sam = out.byName['Sam Lee'];
+    assert.deepEqual([sam.prints, sam.grams, sam.reservations, sam.bookings.length, sam.isEvent], [1, 25, 0, 0, false]);
+    assert.deepEqual([out.unattributed.prints, out.unattributed.list.length], [0, 0]);
+    assert.deepEqual([out.totals.countedPrints, out.totals.countedGrams, out.totals.assignedPrints, out.totals.assignedGrams], [3, 165, 2, 65]);
+  });
+
+  it('prorates an assigned cancelled print like any other', () => {
+    const out = usage([], [print('p1', 'D-ADA', '2026-10-27T14:00', '2026-10-27T14:30', { status: 'failed', estimateMinutes: 120, weightGrams: 80 })],
+      { assignments: new Map([['p1', { name: 'Cara', at: AT }]]) });
+    assert.deepEqual([out.byName.Cara.grams, out.byName.Cara.list[0].method], [20, 'cancelled']);
+  });
+
+  it('ignores an assignment once the print has a reservation', () => {
+    const out = usage(
+      [res('r1', 'Jane Doe', 'Ada', '2026-10-27T09:00', '2026-10-27T11:00')],
+      [print('p1', 'D-ADA', '2026-10-27T09:10', '2026-10-27T10:40')],
+      { assignments: new Map([['p1', { name: 'Sam Lee', at: AT }]]) },
+    );
+    assert.deepEqual(out.users.map((u) => [u.name, u.prints]), [['Jane Doe', 1]]);
+    assert.equal(out.byName['Jane Doe'].list[0].assignedTo, null);
   });
 });

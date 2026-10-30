@@ -6,6 +6,7 @@ import { BambuClient } from './bambu.js';
 import { loadConfig, loadEnvFile, ROOT_DIR } from './config.js';
 import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
+import { AssignmentLog } from './assignments.js';
 import { Collector } from './collector.js';
 import { describeError, SourceError } from './errors.js';
 import { PrintLog } from './printlog.js';
@@ -26,12 +27,14 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   let printLog = null;
   let reservationArchive = null;
   let usageLog = null;
+  let assignments = null;
   if (config.demo) {
     designhub = new DemoDesignHub({ zone: config.timezone, now });
     bambu = new DemoBambu({ zone: config.timezone, now });
     // Demo mode keeps its saved reservations and usage in memory only.
     reservationArchive = new ReservationArchive(null);
     usageLog = new UsageLog(null);
+    assignments = new AssignmentLog(null);
   } else {
     designhub = config.designhub.configured
       ? new DesignHubClient(config.designhub, { zone: config.timezone, fetch })
@@ -45,8 +48,12 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     await reservationArchive.load();
     usageLog = new UsageLog(config.usageLogPath);
     await usageLog.load();
+    assignments = new AssignmentLog(config.assignmentLogPath);
+    await assignments.load();
   }
-  const service = new CompareService(config, { designhub, bambu, printLog, reservationArchive, usageLog, now });
+  const service = new CompareService(config, {
+    designhub, bambu, printLog, reservationArchive, usageLog, assignments, now,
+  });
   const bambuStatus = () => (bambu.status ? bambu.status() : { configured: false });
 
   // Open pages hold an event stream while visible. That is how the server
@@ -193,6 +200,12 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     res.json(await service.recalculateTotal());
   });
 
+  // Charges a print with no reservation to a member ({ printId, name }), or
+  // removes that with an empty name.
+  app.post('/api/usage/assign', jsonOnly, async (req, res) => {
+    res.json(await service.assign(req.body?.printId, req.body?.name));
+  });
+
   app.post('/api/bambu/code', async (req, res) => {
     if (!bambu.submitCode) return res.status(400).json({ error: { message: 'Not available in demo mode.' } });
     await bambu.submitCode(req.body?.code);
@@ -251,6 +264,7 @@ async function main() {
       await app.locals.service.printLog?.queue;
       await app.locals.service.reservationArchive?.queue;
       await app.locals.service.usageLog?.queue;
+      await app.locals.service.assignments?.queue;
       await app.locals.kuma.pending;
       process.exit(0);
     });

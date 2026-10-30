@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { ReservationArchive } from '../src/reservations.js';
 import { UsageLog } from '../src/usagelog.js';
+import { AssignmentLog } from '../src/assignments.js';
 
 const AT = Date.parse('2026-10-28T06:00:00Z');
 const booking = (id, name) => ({ id, name, model: 'Ada', tool: 'Bambu Lab P1S', start: '2026-10-27T14:00:00.000Z', end: '2026-10-27T16:00:00.000Z', isEvent: false });
@@ -99,21 +100,26 @@ describe('UsageLog', () => {
       { ...rec('3', 7), counted: false },
       { id: '4', start: '2026-10-27T18:00:00.000Z', usedGrams: 5, counted: false, reservation: null },
       { id: '5', start: '2026-10-27T19:00:00.000Z', usedGrams: 3, counted: true, reservation: { id: 'r9', name: 'Event: Open house', isEvent: true } },
-    ], { at: AT, totalRecalculation: { from: '2026-10-20', to: '2026-10-27', prints: 5, skippedPrints: 0 } });
+      // No reservation, assigned to Jane by staff.
+      {
+        id: '6', start: '2026-10-27T20:00:00.000Z', usedGrams: 12, counted: true, reservation: null,
+        assignedTo: { name: 'Jane Doe', at: '2026-10-28T09:00:00.000Z' }, materials: [{ type: 'PETG', grams: 12 }],
+      },
+    ], { at: AT, totalRecalculation: { from: '2026-10-20', to: '2026-10-27', prints: 6, skippedPrints: 0 } });
     const t = log.totals();
     assert.deepEqual(t.members, [
       {
-        name: 'Jane Doe', isEvent: false, prints: 2, grams: 30.1, excludedPrints: 1, excludedGrams: 7,
-        materials: { PLA: 30.1 }, lastPrint: '2026-10-27T14:00:00.000Z',
+        name: 'Jane Doe', isEvent: false, prints: 3, grams: 42.1, excludedPrints: 1, excludedGrams: 7,
+        assignedPrints: 1, assignedGrams: 12, materials: { PLA: 30.1, PETG: 12 }, lastPrint: '2026-10-27T20:00:00.000Z',
       },
       {
         name: 'Event: Open house', isEvent: true, prints: 1, grams: 3, excludedPrints: 0, excludedGrams: 0,
-        materials: {}, lastPrint: '2026-10-27T19:00:00.000Z',
+        assignedPrints: 0, assignedGrams: 0, materials: {}, lastPrint: '2026-10-27T19:00:00.000Z',
       },
     ]);
     assert.deepEqual(
       [t.since, t.countedPrints, t.countedGrams, t.excludedPrints, t.excludedGrams, t.unattributedPrints, t.unattributedGrams],
-      ['2026-10-20T14:00:00.000Z', 3, 33.1, 1, 7, 1, 5],
+      ['2026-10-20T14:00:00.000Z', 4, 45.1, 1, 7, 1, 5],
     );
     assert.equal(t.lastTotalRecalculation.from, '2026-10-20');
   });
@@ -123,5 +129,33 @@ describe('UsageLog', () => {
     await log.load();
     await log.save([rec('1', 10)], { at: AT });
     assert.deepEqual([log.get('1').usedGrams, log.stats().writeError], [10, null]);
+  });
+});
+
+describe('AssignmentLog', () => {
+  it('saves assignments owner-only, and removes one given an empty name', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-assign-'));
+    const file = path.join(dir, 'assignments.json');
+    const log = new AssignmentLog(file);
+    await log.load();
+    await log.set('bb-1', '  Jane   Doe ', { at: AT });
+    await log.set('bb-2', 'Sam Lee', { at: AT });
+    const again = new AssignmentLog(file);
+    await again.load();
+    assert.deepEqual(again.get('bb-1'), { name: 'Jane Doe', at: new Date(AT).toISOString() });
+    if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+
+    await again.set('bb-1', '', { at: AT });
+    const third = new AssignmentLog(file);
+    await third.load();
+    assert.deepEqual([third.get('bb-1'), third.get('bb-2')?.name, third.stats().prints], [undefined, 'Sam Lee', 1]);
+  });
+
+  it('rejects bad print ids and names', () => {
+    const log = new AssignmentLog(null);
+    assert.throws(() => log.set('', 'Jane', { at: AT }), { code: 'bad_print' });
+    assert.throws(() => log.set('bb 1/../x', 'Jane', { at: AT }), { code: 'bad_print' });
+    assert.throws(() => log.set('bb-1', 'x'.repeat(101), { at: AT }), { code: 'bad_name' });
+    assert.throws(() => log.set('bb-1', { name: 'Jane' }, { at: AT }), { code: 'bad_name' });
   });
 });

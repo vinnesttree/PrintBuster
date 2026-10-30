@@ -380,6 +380,11 @@ tr.detail-row > td { background: var(--surface-2); padding: 0 10px 12px 26px; }
 }
 .detail-table tr.booking-row:not(:first-child) th { border-top: 1px solid var(--border); }
 #unattributed-sum { margin-left: 8px; font-size: 13px; }
+.assign-help { margin: 8px 0 4px; max-width: none; }
+.assign-form, .assign-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.assign-form input[type="text"] { width: 160px; min-height: 30px; padding: 3px 8px; }
+.btn-small { min-height: 30px; padding: 3px 10px; font-size: 12px; }
+tr.is-assigned td { color: var(--text-2); }
 
 @media (max-width: 720px) {
   .pagenav { margin-left: 0; order: 3; width: 100%; }
