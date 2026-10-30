@@ -68,6 +68,22 @@ function list(env, key, fallback) {
   return v.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+// An optional http(s) URL, e.g. an Uptime Kuma push URL.
+function url(env, key) {
+  const v = str(env, key);
+  if (v === '') return '';
+  let parsed;
+  try {
+    parsed = new URL(v);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`${key} must be an http:// or https:// URL (got "${v}")`);
+  }
+  return v;
+}
+
 // PRINTER_MAP="Bambu device name or serial=Design Hub model, ..."
 export function parsePrinterMap(value) {
   const map = new Map();
@@ -140,6 +156,12 @@ export function loadConfig(env = process.env, argv = process.argv) {
     usageLogPath: path.resolve(ROOT_DIR, str(env, 'USAGE_LOG_PATH', 'data/usage.json')),
     printerOrder: list(env, 'PRINTER_ORDER', DEFAULT_PRINTER_ORDER),
     printerMap: parsePrinterMap(str(env, 'PRINTER_MAP')),
+    // Uptime Kuma push URLs, called after every collection with each
+    // source's state. Empty turns that push off.
+    uptimeKumaPush: {
+      designhub: url(env, 'UPTIME_KUMA_PUSH_DESIGNHUB'),
+      bambu: url(env, 'UPTIME_KUMA_PUSH_BAMBU'),
+    },
     designhub,
     bambu,
   };

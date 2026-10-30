@@ -63,6 +63,7 @@ How the container uses `.env`:
 - **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log) and the [saved reservations and usage](#saved-reservations-and-usage). `docker compose down -v` deletes the volume and everything in it.
 - **Copying the saved data out.** `docker compose cp printbuster:/app/data/print-log.jsonl .` (likewise `reservations.json` and `usage.json`).
 - **Health.** The container reports healthy or unhealthy in `docker ps`, using an unauthenticated `/healthz` endpoint that returns only `{"ok":true}`.
+- **Uptime monitoring.** `/healthz/designhub` and `/healthz/bambu` answer 200 while PrintBuster can read that source and 503 when it can't, and PrintBuster can also push each source's state to Uptime Kuma. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md).
 - **Quoting.** Wrap passwords in single quotes in `.env`, e.g. `BAMBU_PASSWORD='p@ss$word#1'`. Compose treats an unquoted or double-quoted `$` as the start of a variable name, and `npm start` treats an unquoted `#` as the start of a comment. Single quotes keep the value exactly as typed in both.
 
 Without Compose:
@@ -102,6 +103,7 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
 | `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
+| `UPTIME_KUMA_PUSH_DESIGNHUB`, `UPTIME_KUMA_PUSH_BAMBU` | Optional. Uptime Kuma push URLs. After every collection PrintBuster reports to each whether it could read that source. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md). |
 
 ### Bambu sign-in codes
 
@@ -192,6 +194,7 @@ How it fits together:
 - **Days that aren't saved.** A future date beyond tomorrow, or a past day from before the print log, shows "Reservations for this day aren't saved yet" until someone presses Refresh. The usage page lists any unsaved days in its range and leaves their prints out, rather than counting them as unreserved.
 - **Saved days outside the collection.** A future day saved earlier by Refresh shows "Reservations as saved …" with the time it was read.
 - **Errors.** If a collection fails, the pages show the error, and the server logs it once rather than on every run.
+- **Monitoring.** Each collection's result for Design Hub and Bambu is also available to uptime monitors. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md).
 
 ### Design Hub
 
@@ -286,12 +289,13 @@ The tests cover the agenda parser, the Design Hub login and session handling, ev
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/events, /api/config, /api/bambu/*)
+src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/events, /api/config, /api/bambu/*, /healthz/*)
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
 src/usage.js       Filament usage per reservation holder (attribution rules)
 src/collector.js   Server-side collection schedule: 2 min with a page open, 15 min otherwise
+src/uptime.js      Source health for uptime monitors (/healthz/designhub, /healthz/bambu) and Uptime Kuma pushes
 src/service.js     Collects from both sources, caches, builds the comparison and usage
 src/printlog.js    The saved Bambu print history (data/print-log.jsonl) and its coverage
 src/reservations.js Saved agenda days (data/reservations.json)
@@ -301,4 +305,5 @@ src/demo.js        Demo data in the real upstream formats
 public/            The pages: waterfall (index.html) and filament usage (usage.html), plus live.js for live updates; no build step
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)
 compose.yaml       Docker Compose service with the data volume and healthcheck
+docs/              Setup guides: monitoring with Uptime Kuma (uptime-kuma.md)
 ```

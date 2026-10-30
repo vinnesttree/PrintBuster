@@ -116,17 +116,20 @@ export class CompareService {
     const collectDays = [shiftDate(today, -1), today, shiftDate(today, 1)];
     const days = collectDays.filter((d) => !this.reservationArchive?.get(d)?.final);
     const sinceMs = this.printLog && !this.printLog.coverage().length ? 0 : now - PRINT_LOOKBACK_MS;
+    // How long each source took, reported to uptime monitors.
+    const took = {};
+    const timed = (name, promise) => promise.finally(() => { took[name] = this.now() - now; });
     const [cloud, hub] = await Promise.allSettled([
-      this.fetchBambu('bambu:collect', { sinceMs, untilMs: now, force: true }),
-      Promise.all(days.map((d) => this.cached(`hubday:${d}`, () => this.fetchAgendaDay(d), true))),
+      timed('bambu', this.fetchBambu('bambu:collect', { sinceMs, untilMs: now, force: true })),
+      timed('designhub', Promise.all(days.map((d) => this.cached(`hubday:${d}`, () => this.fetchAgendaDay(d), true)))),
     ]);
     this.collected = {
       at: now,
       days: new Set(collectDays),
       bambu: cloud.status === 'fulfilled'
-        ? { ok: true, complete: cloud.value.complete, deviceCount: cloud.value.devices.length }
+        ? { ok: true, complete: cloud.value.complete, deviceCount: cloud.value.devices.length, durationMs: took.bambu }
         : { ok: false, error: cloud.reason },
-      designhub: hub.status === 'fulfilled' ? { ok: true } : { ok: false, error: hub.reason },
+      designhub: hub.status === 'fulfilled' ? { ok: true, durationMs: took.designhub } : { ok: false, error: hub.reason },
     };
     this.pollError = logChange('Bambu print logging', this.pollError, cloud);
     this.hubError = logChange('Reading the Design Hub agenda', this.hubError, hub);
