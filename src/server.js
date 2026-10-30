@@ -8,6 +8,7 @@ import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
 import { AssignmentLog } from './assignments.js';
 import { Collector } from './collector.js';
+import { ReservationImport } from './importer.js';
 import { describeError, SourceError } from './errors.js';
 import { PrintLog } from './printlog.js';
 import { ReservationArchive } from './reservations.js';
@@ -74,12 +75,14 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     },
   });
   service.attachCollector(collector);
+  const importer = new ReservationImport(service, { now });
 
   const app = express();
   app.disable('x-powered-by');
   app.locals.service = service;
   app.locals.collector = collector;
   app.locals.kuma = kuma;
+  app.locals.importer = importer;
   // Ends every open event stream, so the server can close.
   app.locals.closeStreams = () => {
     for (const res of streams) res.end();
@@ -206,6 +209,20 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     res.json(await service.assign(req.body?.printId, req.body?.name));
   });
 
+  // Admin tasks. The bulk import reads a date range's reservations from
+  // Design Hub in the background; the admin page polls its progress.
+  app.get('/api/admin/import', (req, res) => res.json(importer.status()));
+
+  app.post('/api/admin/import', jsonOnly, (req, res) => {
+    if (importer.busy) {
+      return res.status(409).json({ error: { message: 'An import is already running.', code: 'import_running', hint: 'Wait for it to finish, or stop it.' } });
+    }
+    const { from, to, skipFinal = true, recalculateTotal = false } = req.body || {};
+    res.status(202).json(importer.start({ from, to, skipFinal: skipFinal !== false, recalculateTotal: recalculateTotal === true }));
+  });
+
+  app.post('/api/admin/import/stop', jsonOnly, (req, res) => res.json(importer.stop()));
+
   app.post('/api/bambu/code', async (req, res) => {
     if (!bambu.submitCode) return res.status(400).json({ error: { message: 'Not available in demo mode.' } });
     await bambu.submitCode(req.body?.code);
@@ -258,10 +275,12 @@ async function main() {
   // `docker stop` would otherwise wait out its timeout and kill the process.
   const shutdown = () => {
     app.locals.collector.stop();
+    app.locals.importer.stop();
     app.locals.closeStreams();
     // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
       await app.locals.service.printLog?.queue;
+      await app.locals.importer.running;
       await app.locals.service.reservationArchive?.queue;
       await app.locals.service.usageLog?.queue;
       await app.locals.service.assignments?.queue;
