@@ -132,7 +132,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 16px 24px 48px; display: grid
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
 .control-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .control-group:first-child { gap: 6px; }
-input[type="date"], input[type="text"] {
+input[type="date"], input[type="text"], input[type="password"], select {
   font: inherit; color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; min-height: 34px;
 }
@@ -278,6 +278,10 @@ input[type="date"], input[type="text"] {
   font-size: 11px; font-weight: 800; padding: 3px 6px; color: var(--surface); background: var(--text);
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--text);
 }
+/* A cancelled print's tag is its estimated share used: dashed, like an estimate. */
+.print-chip.is-cancelled:not(.is-heavy):not(.is-long), .key-chip.is-cancelled {
+  box-shadow: none; outline: 1px dashed var(--muted); outline-offset: -1px;
+}
 .print-chip.is-heavy::before, .key-chip.is-heavy::before { content: "\25B2\00A0"; font-size: 8px; vertical-align: 1px; }
 .key-multi { width: 24px; height: 5px; border-radius: 2px; }
 .tt-row.tt-warn { color: var(--text); display: flex; align-items: center; gap: 5px; margin-top: 2px; }
@@ -411,3 +415,23 @@ tr.is-assigned td { color: var(--text-2); }
 .admin-status .icon { width: 16px; height: 16px; font-size: 10px; flex: none; }
 .admin-actions { margin-top: 10px; }
 #bambu-code { width: 9em; letter-spacing: .15em; }
+
+/* ---------- Sign-in, account and accounts ---------- */
+.account-menu { display: flex; align-items: center; gap: 4px; }
+.account-name { font-weight: 600; color: var(--text-2); text-decoration: none; padding: 6px 4px; white-space: nowrap; }
+a.account-name:hover { color: var(--text); text-decoration: underline; }
+a.account-name:focus-visible { outline: 2px solid var(--res); outline-offset: 2px; border-radius: 4px; }
+.auth-main { max-width: 480px; }
+.auth-card p { margin: 6px 0 0; }
+.auth-card a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+.auth-form { display: grid; gap: 12px; margin-top: 14px; }
+.auth-field { display: grid; gap: 4px; font-weight: 600; color: var(--text-2); }
+.auth-field input { width: 100%; font-weight: 400; }
+.auth-form .btn { justify-self: start; }
+.auth-msg { margin: 0; min-height: 1.45em; color: var(--text); }
+.auth-msg:empty { min-height: 0; }
+select:focus-visible { outline: 2px solid var(--res); outline-offset: 2px; }
+#account-form h3 { margin: 16px 0 0; }
+#account-form input[type="password"] { width: 12em; }
+#account-list .assign-form input[type="password"] { width: 150px; min-height: 30px; padding: 3px 8px; }
+#account-list td { vertical-align: middle; }

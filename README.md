@@ -12,7 +12,8 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 - **A print with no reservation** is red, with a ✕ badge.
 - **A print that ran outside its reservation** has an amber section showing the unreserved part, and a ! badge.
 - **A hollow band** is a reservation on a Bambu printer where no print was recorded.
-- **A grams tag** follows every print except cancelled or failed ones: the slicer's estimate of the filament it used. Bambu's estimate covers the whole job, which overstates what a cancelled print used, so the waterfall shows no amount for those, and they're never flagged as over the weight limit. The usage page still charges them pro rata. It sits after the bar, or inside it when the next print is too close, and is left off only when neither fits (the tooltip always has it). Prints longer than `FLAG_DURATION_HOURS` add the duration, e.g. `52 g · 12 h+`.
+- **A grams tag** follows every print: the slicer's estimate of the filament it used. It sits after the bar, or inside it when the next print is too close, and is left off only when neither fits (the tooltip always has it). Prints longer than `FLAG_DURATION_HOURS` add the duration, e.g. `52 g · 12 h+`.
+- **A dashed grams tag starting with ~** is a cancelled or failed print's estimated use. Bambu's estimate covers the whole job, so a cancelled print shows the share of it that matches how long the print ran, the same amount the usage page charges (see [Filament usage rules](#filament-usage-rules)). For example, `~30 g` is a 120 g job cancelled a quarter of the way through its estimated time. The tooltip and the table view give the share, the length and each filament scaled the same way, next to the whole job's estimate. When Bambu recorded no end time or no time estimate, how long it ran is unknown, so the tag shows the whole job's amount as an upper bound, e.g. `≤120 g`. A cancelled print is flagged as over the weight limit only when its estimated use is, never on an upper bound.
 - **A bold, inverted tag with ▲** marks a print over `FLAG_WEIGHT_GRAMS` (default 200 g).
 - **A striped blue, green and violet band** under a print marks multi-colour or multi-material prints. These colours never mean a print's status, which uses red and yellow.
 
@@ -27,7 +28,9 @@ The **Admin** page (`/admin.html`) holds every button that makes PrintBuster ask
 - **Import reservations** reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations).
 - **Filament usage** has **Recalculate total**.
 
-The page will later also manage logins. Until then it is protected only by `APP_PASSWORD`, like the other pages.
+- **Accounts** lists who can sign in, and adds, changes and deletes accounts. See [Accounts and the guest view](#accounts-and-the-guest-view).
+
+Every page needs a sign-in, except the **guest view** (`/guest.html`): the waterfall with reservation names and print titles hidden, for anyone. The sign-in page links to it with **View as guest**.
 
 ## Quick start
 
@@ -40,12 +43,16 @@ npm run demo        # generated sample data, no logins needed
 
 Open http://127.0.0.1:3000. Demo mode shows each case the app detects: unreserved prints, a print that overran its reservation, an overnight print, a printer that isn't mapped, and a reservation with no print.
 
+Demo mode with no accounts needs no sign-in. To try the sign-in, set `APP_PASSWORD` (see below) when starting it.
+
 To use live data:
 
 ```sh
-cp .env.example .env   # then fill in the logins
+cp .env.example .env   # then fill in the logins, and APP_USERNAME and APP_PASSWORD
 npm start
 ```
+
+Sign in with `APP_USERNAME` and `APP_PASSWORD`. That creates the first admin account; add the others on the Admin page. See [Accounts and the guest view](#accounts-and-the-guest-view).
 
 When neither source has credentials in `.env`, the app starts in demo mode. A banner and a "Demo data" badge say so.
 
@@ -68,9 +75,9 @@ The container starts again whenever Docker starts (for example after a reboot), 
 
 How the container uses `.env`:
 
-- **Publishing address.** `HOST` and `PORT` in `.env` choose where the page is published on the host. The default `127.0.0.1:3000` means only that computer can open it. To share it on the network, set `HOST=0.0.0.0` and also set `APP_PASSWORD`. Inside the container the app always listens on `0.0.0.0:3000`.
-- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log), the [saved reservations and usage](#saved-reservations-and-usage) and the prints staff assigned to members. `docker compose down -v` deletes the volume and everything in it.
-- **Copying the saved data out.** `docker compose cp printbuster:/app/data/print-log.jsonl .` (likewise `reservations.json`, `usage.json` and `assignments.json`).
+- **Publishing address.** `HOST` and `PORT` in `.env` choose where the page is published on the host. The default `127.0.0.1:3000` means only that computer can open it. To share it on the network, set `HOST=0.0.0.0`. Every page except the guest view needs a sign-in, but serve it over HTTPS (see [Accounts and the guest view](#accounts-and-the-guest-view)), so passwords and sign-ins aren't sent in the clear. Inside the container the app always listens on `0.0.0.0:3000`.
+- **Saved data.** The `printbuster-data` volume keeps the Bambu sign-in token, so restarts and rebuilds don't ask for a new email code. It also keeps the [print log](#print-log), the [saved reservations and usage](#saved-reservations-and-usage), the prints staff assigned to members, and the accounts and sign-ins. `docker compose down -v` deletes the volume and everything in it.
+- **Copying the saved data out.** `docker compose cp printbuster:/app/data/print-log.jsonl .` (likewise `reservations.json`, `usage.json`, `assignments.json`, `accounts.json` and `sessions.json`).
 - **Health.** The container reports healthy or unhealthy in `docker ps`, using an unauthenticated `/healthz` endpoint that returns only `{"ok":true}`.
 - **Uptime monitoring.** `/healthz/designhub` and `/healthz/bambu` answer 200 while PrintBuster can read that source and 503 when it can't, and PrintBuster can also push each source's state to Uptime Kuma. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md).
 - **Quoting.** Wrap passwords in single quotes in `.env`, e.g. `BAMBU_PASSWORD='p@ss$word#1'`. Compose treats an unquoted or double-quoted `$` as the start of a variable name, and `npm start` treats an unquoted `#` as the start of a comment. Single quotes keep the value exactly as typed in both.
@@ -106,7 +113,12 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `FLAG_DURATION_HOURS` | Flag a print that runs longer than this. Default 12. `0` turns it off. |
 | `TIMEZONE` | The time zone the agenda uses. Default `America/Chicago`. |
 | `HOST`, `PORT` | Default `127.0.0.1:3000`, so only this computer can open the page. Use `HOST=0.0.0.0` to share it on the network. With Docker Compose, these choose where the container is published. |
-| `APP_USERNAME`, `APP_PASSWORD` | Optional basic-auth login for the PrintBuster page. Set these before sharing the page on the network, because it shows member names. |
+| `APP_USERNAME`, `APP_PASSWORD` | While there is no admin account, PrintBuster creates one from these at startup (`APP_USERNAME` defaults to `admin`; the password needs at least 10 characters). Remove `APP_PASSWORD` once you've signed in. See [Accounts and the guest view](#accounts-and-the-guest-view). |
+| `GUEST_VIEW` | `true` (default) offers the [guest view](#the-guest-view) to anyone who can open the page. `false` turns it off. |
+| `SESSION_DAYS` | A sign-in ends after this many days without use. Default 7. It also ends 30 days after signing in (or `SESSION_DAYS`, if longer). |
+| `TRUST_PROXY` | Set this when a reverse proxy serves PrintBuster: the proxy's address or subnet (e.g. `loopback`, or `172.16.0.0/12` for a proxy on the Docker network), or the number of proxies in front. PrintBuster then sees whether the visitor used HTTPS and their own address, for the sign-in cookie and for counting failed sign-ins. Leave it empty otherwise; trusting a proxy that isn't there would let anyone fake their address. |
+| `COOKIE_SECURE` | `auto` (default) marks the sign-in cookie `Secure` when the request came over HTTPS. `true` always does (use this when you only ever serve HTTPS). `false` never does. |
+| `ACCOUNTS_PATH`, `SESSIONS_PATH` | Where accounts and sign-ins are kept. Default `data/accounts.json` and `data/sessions.json`. |
 | `POLL_ACTIVE_MINUTES`, `POLL_IDLE_MINUTES` | How often the server [collects data](#data-collection) from Design Hub and Bambu: every `POLL_ACTIVE_MINUTES` (default 2) while anyone has a page open, every `POLL_IDLE_MINUTES` (default 15) while nobody does. Decimals are allowed. `0` turns that schedule off. `BAMBU_POLL_MINUTES` still works as the older name for `POLL_IDLE_MINUTES`. |
 | `CACHE_SECONDS` | How long demo mode reuses its generated prints. Default 60. Live data is never re-read on page loads (see [data collection](#data-collection)). |
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
@@ -114,6 +126,34 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
 | `ASSIGNMENT_LOG_PATH` | Where prints staff assigned to a member are kept. Default `data/assignments.json`. |
 | `UPTIME_KUMA_PUSH_DESIGNHUB`, `UPTIME_KUMA_PUSH_BAMBU` | Optional. Uptime Kuma push URLs. After every collection PrintBuster reports to each whether it could read that source. See [Monitoring with Uptime Kuma](docs/uptime-kuma.md). |
+
+### Accounts and the guest view
+
+Every page except the guest view needs a sign-in, and so does every API call that returns names. There are two roles:
+
+- **Admin**: every page, the Admin page's tasks, and the accounts.
+- **Staff**: the waterfall and filament usage, including assigning prints with no reservation to a member. Staff don't see the Admin page; its API answers them with 403.
+
+**The first account.** Set `APP_USERNAME` and `APP_PASSWORD` in `.env` and start PrintBuster. While there is no admin account, it creates one from them (or, if an account with that name exists, makes it an admin with that password), and logs that it did. Sign in, add the other accounts under **Accounts** on the Admin page, and then remove `APP_PASSWORD` from `.env`: it is no longer used while an admin exists. Live mode with no accounts at all lets nobody in, and the sign-in page says how to create one. Demo mode with no accounts is open to anyone, since its data is generated.
+
+**Managing accounts.** On the Admin page, admins add accounts (username, password, role), change roles, set someone's password and delete accounts. A role change applies at once. Setting someone's password, or deleting their account, signs them out everywhere. There is always at least one admin: the last one can't be deleted or made staff. Anyone signed in can change their own password from their name in the top bar (the **Your account** page); that signs them out everywhere else.
+
+**Locked out?** If no admin can sign in, stop PrintBuster, delete `data/accounts.json` (in Docker, on the `printbuster-data` volume), set `APP_PASSWORD`, and start it again.
+
+How sign-in is kept secure:
+
+- **Passwords** need 10 to 256 characters and can't be the username. They're stored only as salted scrypt hashes (N = 2^15, r = 8, p = 3, one of OWASP's recommended settings) in `data/accounts.json`, which only its owner can read.
+- **Sign-ins** use a random 256-bit token in a cookie that page scripts can't read (`HttpOnly`) and other sites can't send (`SameSite=Strict`), marked `Secure` over HTTPS (see `COOKIE_SECURE` and `TRUST_PROXY`). The server keeps only a SHA-256 hash of each token, in `data/sessions.json`, so neither file holds anything that signs anyone in. Signing in always starts a fresh session, and **Sign out** ends it on the server.
+- **Failed sign-ins** are limited: after 5 for one username, or 20 from one address, within 15 minutes, signing in is refused for the rest of that window, even with the right password. A wrong username takes as long to check as a wrong password, so failed sign-ins don't reveal which usernames exist. Failures are logged with the username and address.
+- **Requests that change something** must be JSON and can't come from another site.
+- **Credentials stay on the server.** The Design Hub password and session cookie, the Bambu password and access token, `APP_PASSWORD`, password hashes and sign-in tokens are used only to collect data and check sign-ins, and are never sent to a browser. Pages get only what they display. As a safeguard, every API response and live update is checked for those credentials before it is sent, and any found (for example in an error message Bambu echoed back) is replaced with `[redacted]`.
+- **Serve it over HTTPS** when anyone else can reach it, for example behind a reverse proxy such as Caddy or nginx with `TRUST_PROXY` set. Over plain HTTP, passwords and sign-in cookies cross the network unencrypted.
+
+#### The guest view
+
+`/guest.html` shows the waterfall to anyone, with no sign-in: **View as guest** on the sign-in page, or **Guest view** in the top bar for a signed-in user to see what guests see. It is meant for, say, a screen in the lab or members checking when a printer is free.
+
+It shows the printers, when they're reserved and when they printed, and whether each print had a reservation, with its filament estimate. It leaves out what identifies anyone: every reservation is shown as "Reserved" (or "Event"), every print as "Print" with no plate name, and printer serial numbers, reservation and print ids, member-only flags and the reasons a source is unavailable are left out. The server builds the guest data from a list of the fields it may contain, so a field added to the waterfall later stays out of the guest view until it's added to that list (`src/guest.js`). It shows only reservations PrintBuster has already saved, so a guest never makes it ask Design Hub for anything; a day that isn't saved yet shows as unavailable. The filament usage and Admin pages have no guest version. `GUEST_VIEW=false` turns it off.
 
 ### Bambu sign-in codes
 
@@ -261,6 +301,7 @@ The usage page charges prints to reservation holders:
 - **Every print in a reservation is tracked against it.** Expanding a member lists each reservation with its prints, grams and not-counted prints, including reservations with no prints.
 - **A cancelled or failed print** counts in proportion to how long it ran, interpolated linearly: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. Each filament in the breakdown is scaled the same way. For example, a 120 g print cancelled 45 minutes into a 3-hour estimate counts 30 g. The share is added to the member's filament for that reservation, in the range and the all-time totals, like any other counted print (so a cancelled print more than half outside the member's reservation isn't counted either). The time printed runs from Bambu's start time to its end time, to the second, using Bambu's unrounded estimate. A print cancelled within a minute is still drawn a minute long but charged only for the seconds it ran. Time spent paused counts as printing, because Bambu doesn't report pauses. If Bambu gave no time estimate, or recorded no end time for the cancelled print, the full weight counts.
 - **A print still running** counts the share of its estimated time that has elapsed.
+- The waterfall's tag on a cancelled or failed print shows the same estimate (see the grams tag above).
 - A print belongs to the date range its start time falls in, so adjacent ranges never count it twice.
 - Prints the waterfall marks **No reservation** aren't charged to anyone. That includes prints that started outside every reservation and then ran into one, and prints less than 10% inside reservations. They're listed under "Prints with no reservation", with the reason.
 - **Staff can assign a print with no reservation to a member.** In "Prints with no reservation", type the member's name under **Charge to** (the box suggests names already on the page) and press **Assign**. The print then counts toward that member's filament, prints and materials, in the selected range and in the all-time totals, under the same proration rules as any other print. It's listed under the member as "Assigned prints with no reservation", and a member with no reservation of their own gets a row too. **Remove** undoes it. Use the name exactly as Design Hub shows it, so it adds up with their reserved prints. A reservation always wins: if a later recalculation finds one for the print, it's charged to that reservation and the assignment is ignored. Assignments are saved in `data/assignments.json`.
@@ -307,12 +348,16 @@ Each day is one agenda request, read two at a time. The import runs on the serve
 npm test
 ```
 
-The tests cover the agenda parser, the Design Hub login and session handling, every Bambu sign-in path, task paging, the matching rules, the filament usage rules, and the HTTP API. Both upstream sites are replaced by a mock in `test/helpers/mock-upstream.js`, so the tests need no network access.
+The tests cover the agenda parser, the Design Hub login and session handling, every Bambu sign-in path, task paging, the matching rules, the filament usage rules, accounts, sign-in and the guest view (including that no credential reaches a response), and the HTTP API. Both upstream sites are replaced by a mock in `test/helpers/mock-upstream.js`, so the tests need no network access.
 
 Project layout:
 
 ```
-src/server.js      Express app and API (/api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/admin/status, /api/admin/collect, /api/admin/import[/stop], /api/events, /api/config, /api/bambu/*, /healthz/*)
+src/server.js      Express app and API (/api/session, /api/login, /api/logout, /api/guest/{config,compare}, /api/compare, /api/usage, /api/usage/recalculate[-total], /api/usage/assign, /api/admin/status, /api/admin/collect, /api/admin/import[/stop], /api/accounts[/password,/role,/delete], /api/account/password, /api/events, /api/config, /api/bambu/*, /healthz/*)
+src/accounts.js    Accounts (scrypt password hashes), sign-in sessions (token hashes) and the failed sign-in limit
+src/auth.js        The session cookie, safe redirects after sign-in, and redacting credentials from responses
+src/guest.js       The guest view's data: the waterfall with names, titles and ids left out
+src/material.js    How much filament a print used, prorating cancelled and running prints
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
 src/compare.js     Printer mapping and reservation matching
@@ -327,7 +372,7 @@ src/assignments.js Prints with no reservation that staff assigned to a member (d
 src/importer.js    The admin page's bulk reservation import, run in the background
 src/files.js       Atomic, owner-only JSON file saving
 src/demo.js        Demo data in the real upstream formats
-public/            The pages: waterfall (index.html), filament usage (usage.html) and admin (admin.html), plus live.js for live updates; no build step
+public/            The pages: waterfall (index.html), guest view (guest.html), filament usage (usage.html), admin (admin.html), sign-in (login.html) and your account (account.html), plus live.js for live updates and the account menu; no build step
 Dockerfile         Container image (Node 22 Alpine, runs as the non-root node user)
 compose.yaml       Docker Compose service with the data volume and healthcheck
 docs/              Setup guides: monitoring with Uptime Kuma (uptime-kuma.md)

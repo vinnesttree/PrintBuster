@@ -7,6 +7,10 @@ const PRINT_TOP = 24;   // print bar sits in the lower part of the band
 
 const $ = (sel) => document.querySelector(sel);
 const state = { config: null, data: null, date: null, loading: false };
+// The same page serves the guest view (guest.html), from the guest API,
+// which leaves out names and print titles.
+const GUEST = document.body.dataset.view === 'guest';
+const API = GUEST ? '/api/guest' : '/api';
 
 // ---------------------------------------------------------------- helpers
 
@@ -148,27 +152,46 @@ const fmtHours = (h) => `${Number.isInteger(h) ? h : h.toFixed(1)} h`;
 // "245 g · 81 m (est.)" — the headline amount, or null when unknown.
 const fmtGrams = (g) => `${g < 10 ? g.toFixed(1) : Math.round(g)} g`;
 
-// Bambu's weight and length are the slicer's estimates for the whole job,
-// so a cancelled or failed print (one status in Bambu's data) shows no
-// amounts: they would overstate what it used.
-const showsGrams = (p) => p.status !== 'failed';
+// Bambu's weight and length are the slicer's estimates for the whole job.
+// A cancelled or failed print (one status in Bambu's data) shows the server's
+// estimate of what it used instead: the share of its estimated time it ran
+// ("~30 g"). When how long it ran is unknown, the whole job's amount is the
+// most it can have used ("≤120 g").
+const usedGrams = (p) => (p.cancelledUse ? p.cancelledUse.grams : p.weightGrams);
+const gramsLabel = (p, g) => `${p.cancelledUse ? (p.cancelledUse.upperBound ? '≤' : '~') : ''}${fmtGrams(g)}`;
 
 // The tag after a print bar: its filament weight, plus the duration when it
 // runs over the long-print threshold. Prints over the weight threshold get
 // the heavy (most noticeable) tag.
 function printChip(p) {
   const parts = [];
-  if (showsGrams(p) && p.weightGrams != null) parts.push(fmtGrams(p.weightGrams));
+  if (usedGrams(p) != null) parts.push(gramsLabel(p, usedGrams(p)));
   if (p.overTime) parts.push(`${fmtHours(state.data.flagDurationHours)}+`);
   if (!parts.length) return null;
-  return { text: parts.join(' · '), heavy: Boolean(p.overWeight), long: Boolean(p.overTime) };
+  return { text: parts.join(' · '), heavy: Boolean(p.overWeight), long: Boolean(p.overTime), cancelled: Boolean(p.cancelledUse) };
+}
+
+const amountText = (g, m) => [g != null ? `${g} g` : null, m != null ? `${m} m` : null].filter(Boolean).join(' · ');
+
+// Why a cancelled print's amount is what it is.
+function cancelledNote(p) {
+  const u = p.cancelledUse;
+  if (u.method === 'cancelled') return `ran ${Math.round(u.fraction * 100)}% of its estimated ${fmtDuration(p.estimateSeconds * 1000)}`;
+  if (u.method === 'cancelled-end-unknown') return 'end time not recorded, so up to the full amount';
+  return 'no time estimate, so up to the full amount';
 }
 
 function materialAmount(p) {
-  if (!showsGrams(p) || (p.weightGrams == null && p.lengthMeters == null)) return null;
-  const amount = [p.weightGrams != null ? `${p.weightGrams} g` : null, p.lengthMeters != null ? `${p.lengthMeters} m` : null]
-    .filter(Boolean).join(' · ');
-  return `${amount} (est.)`;
+  const u = p.cancelledUse;
+  if (u) {
+    if (u.grams == null && u.lengthMeters == null) return null;
+    const full = amountText(p.weightGrams, p.lengthMeters);
+    return u.upperBound
+      ? `up to ${amountText(u.grams, u.lengthMeters)} (est.)`
+      : `~${amountText(u.grams, u.lengthMeters)} used (est.) of ${full}`;
+  }
+  if (p.weightGrams == null && p.lengthMeters == null) return null;
+  return `${amountText(p.weightGrams, p.lengthMeters)} (est.)`;
 }
 
 const ttInfo = (text) => el('div', { className: 'tt-row tt-info' },
@@ -185,13 +208,14 @@ function materialRows(p) {
   const rows = [];
   const amount = materialAmount(p);
   if (amount) rows.push(ttRow('Material', amount));
-  else if (!showsGrams(p) && (p.weightGrams != null || filaments.length)) {
-    rows.push(ttRow('Material', 'amount not shown for a cancelled print'));
-  }
-  for (const f of filaments) {
+  if (p.cancelledUse && (amount || filaments.length)) rows.push(ttInfo(`Cancelled or failed: ${cancelledNote(p)}`));
+  // A cancelled print's filaments are scaled the same way as its total.
+  const shown = p.cancelledUse ? p.cancelledUse.filaments : filaments;
+  const prefix = p.cancelledUse ? (p.cancelledUse.upperBound ? '≤' : '~') : '';
+  for (const f of shown) {
     rows.push(el('div', { className: 'tt-row tt-filament' },
       swatch(f.color),
-      `${f.type || 'Unknown'}${showsGrams(p) && f.grams != null ? ` · ${f.grams} g` : ''}`));
+      `${f.type || 'Unknown'}${f.grams != null ? ` · ${prefix}${f.grams} g` : ''}`));
   }
   if (p.multiMaterial) rows.push(ttInfo(`Multi-material · ${p.materialTypes.join(', ')}`));
   if (p.multiColor) rows.push(ttInfo(`Multi-colour · ${filaments.length} filaments`));
@@ -360,7 +384,9 @@ function renderChart() {
         tabindex: '0',
         role: 'img',
         'aria-label': `Print: ${p.title} on ${p.deviceName}, ${fmtWhen(p.s)} to ${fmtWhen(p.e)}. ${MATCH[p.match].label}.`
-          + (showsGrams(p) && p.weightGrams != null ? ` ${fmtGrams(p.weightGrams)} of filament (estimate).` : '')
+          + (usedGrams(p) == null ? ''
+            : p.cancelledUse ? ` Cancelled; ${p.cancelledUse.upperBound ? 'up to' : 'about'} ${fmtGrams(usedGrams(p))} of filament used (estimate).`
+              : ` ${fmtGrams(usedGrams(p))} of filament (estimate).`)
           + (p.large ? ' Large print.' : '')
           + (p.multiMaterial ? ` Multi-material: ${p.materialTypes.join(', ')}.` : p.multiColor ? ' Multi-colour.' : ''),
       });
@@ -396,7 +422,7 @@ function renderChart() {
         const place = room >= chipW + 9 ? 'after' : barPx >= chipW + 8 ? 'inside' : null;
         if (place) {
           node.append(el('span', {
-            className: ['print-chip', chip.heavy && 'is-heavy', chip.long && 'is-long', `is-${place}`].filter(Boolean).join(' '),
+            className: ['print-chip', chip.heavy && 'is-heavy', chip.long && 'is-long', chip.cancelled && 'is-cancelled', `is-${place}`].filter(Boolean).join(' '),
             'aria-hidden': 'true',
             text: chip.text,
           }));
@@ -505,16 +531,22 @@ function bambuCodeNotice(kind, message) {
 function renderBanners() {
   const { sources, demo, rows, printsAvailable, printGaps } = state.data;
   const list = [];
+  if (GUEST) {
+    list.push(banner('icon-info', 'i', 'Guest view',
+      'Who booked each reservation and what each print is are hidden. Staff can sign in to see them.',
+      el('p', {}, el('a', { href: 'login.html' }, 'Sign in'))));
+  }
   if (demo) {
     list.push(banner('icon-info', 'i', 'Showing demo data',
-      'These reservations and prints are generated samples. Add the Design Hub and Bambu logins to .env and restart to compare live data.'));
+      GUEST ? 'These reservations and prints are generated samples.'
+        : 'These reservations and prints are generated samples. Add the Design Hub and Bambu logins to .env and restart to compare live data.'));
   }
   const names = { designhub: 'Design Hub', bambu: 'Bambu Cloud' };
   for (const key of ['designhub', 'bambu']) {
     const src = sources[key];
     if (src.ok) continue;
     const code = src.error.code;
-    if (code === 'bambu_code_required' || code === 'bambu_tfa_required') {
+    if (!GUEST && (code === 'bambu_code_required' || code === 'bambu_tfa_required')) {
       list.push(bambuCodeNotice(code === 'bambu_tfa_required' ? 'tfa' : 'verifyCode', src.error.message));
       continue;
     }
@@ -526,13 +558,14 @@ function renderBanners() {
   if (sources.bambu.log?.writeError) {
     list.push(banner('icon-bad', '✕', 'Could not save the print log', `${sources.bambu.log.writeError}. New prints are kept in memory and saved once this is fixed, but are lost if PrintBuster restarts first. Check that the data folder (or Docker volume) is writable.`));
   }
-  if (sources.bambu.ok && !sources.bambu.complete) {
+  if (sources.bambu.ok && !sources.bambu.complete && !GUEST) {
     list.push(banner('icon-partial', '!', 'Bambu print history may be incomplete',
       'The task list ran out of pages before reaching this day. Increase BAMBU_MAX_TASK_PAGES in .env.'));
   }
   if (sources.designhub.ok && sources.designhub.savedAt) {
     list.push(banner('icon-info', 'i', `Reservations as saved ${fmtWhen(ms(sources.designhub.savedAt))}`,
-      'The server keeps yesterday, today and tomorrow up to date; other days show what was saved. To read this day again, import it on the Admin page.'));
+      GUEST ? 'Yesterday, today and tomorrow are kept up to date; other days show what was saved.'
+        : 'The server keeps yesterday, today and tomorrow up to date; other days show what was saved. To read this day again, import it on the Admin page.'));
   }
   if (sources.designhub.ok && sources.designhub.stale) {
     const e = sources.designhub.error;
@@ -544,7 +577,7 @@ function renderBanners() {
     list.push(banner('icon-partial', '!', `${sources.designhub.skippedRows.length} agenda row(s) could not be read`, rowsText));
   }
   const unmapped = rows.filter((r) => r.unmapped && r.printCount > 0);
-  if (unmapped.length) {
+  if (unmapped.length && !GUEST) {
     list.push(banner('icon-partial', '!', 'Bambu printers not matched to a Design Hub model',
       `${unmapped.map((r) => r.label).join(', ')}: their prints count as unreserved. If they are on the agenda under another name, add them to PRINTER_MAP in .env (e.g. PRINTER_MAP=${unmapped[0].label}=Ada).`));
   }
@@ -672,7 +705,7 @@ async function load() {
   state.loading = true;
   $('#chart-scroll').classList.add('is-loading');
   try {
-    const res = await fetch(`/api/compare?date=${encodeURIComponent(state.date)}`);
+    const res = await apiFetch(`${API}/compare?date=${encodeURIComponent(state.date)}`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error?.message || `HTTP ${res.status}`);
     if (seq !== loadSeq) return;
@@ -714,7 +747,7 @@ async function autoRefresh() {
   if (document.visibilityState !== 'visible' || state.loading) return;
   const wasToday = state.date === state.config.today;
   try {
-    const res = await fetch('/api/config');
+    const res = await apiFetch(`${API}/config`);
     if (res.ok) state.config.today = (await res.json()).today;
   } catch { /* keep the old value */ }
   if (wasToday && state.date !== state.config.today) setDate(state.config.today);
@@ -728,8 +761,9 @@ async function init() {
     applyTheme(THEMES[(THEMES.indexOf(storedTheme()) + 1) % THEMES.length]);
   });
 
-  const res = await fetch('/api/config');
+  const res = await apiFetch(`${API}/config`);
   state.config = await res.json();
+  if (!res.ok) throw new Error(state.config.error?.message || `HTTP ${res.status}`);
   fmtCache = {};
 
   const fromUrl = new URL(window.location.href).searchParams.get('date');

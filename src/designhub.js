@@ -119,6 +119,12 @@ export class DesignHubClient {
     this.loginPromise = null;
   }
 
+  // Every credential this client holds (the password and the session
+  // cookies), so the server can make sure none ever reaches a browser.
+  secrets() {
+    return [this.cfg.password, this.cfg.cookie, ...this.jar.values()];
+  }
+
   get canLogin() {
     return Boolean(this.cfg.username && this.cfg.password);
   }

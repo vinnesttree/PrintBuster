@@ -19,6 +19,8 @@ services:
       RESERVATION_LOG_PATH: data/reservations.json
       USAGE_LOG_PATH: data/usage.json
       ASSIGNMENT_LOG_PATH: data/assignments.json
+      ACCOUNTS_PATH: data/accounts.json
+      SESSIONS_PATH: data/sessions.json
     ports:
       - "${HOST:-127.0.0.1}:${PORT:-3000}:3000"
     volumes:

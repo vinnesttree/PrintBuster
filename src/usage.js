@@ -24,32 +24,13 @@
 //   always wins over an assignment.
 
 import { reservationIndex, reservationsNear, uncoveredSegments } from './compare.js';
+import { round1, usedFraction, usedMaterials } from './material.js';
 
 const ms = (iso) => Date.parse(iso);
-const round1 = (n) => Math.round(n * 10) / 10;
+
+export { usedFraction };
 
 export const MAX_OUTSIDE_SHARE = 0.5;
-
-// The share of the estimated filament that was actually used, and why. A
-// cancelled or failed print is interpolated linearly: the share of its
-// estimated print time that it ran.
-export function usedFraction(p, nowMs) {
-  const estimateMs = p.estimateSeconds ? p.estimateSeconds * 1000 : p.estimateMinutes ? p.estimateMinutes * 60000 : 0;
-  if (p.status === 'failed') {
-    // Bambu reports failed and cancelled prints with the same status.
-    if (p.finishUnknown) return { fraction: 1, method: 'cancelled-end-unknown' };
-    if (!estimateMs) return { fraction: 1, method: 'cancelled-no-estimate' };
-    // The time it actually ran, not the one-minute minimum it is drawn with.
-    const ranMs = p.ranSeconds != null ? p.ranSeconds * 1000 : ms(p.end) - ms(p.start);
-    return { fraction: Math.min(1, Math.max(0, ranMs) / estimateMs), method: 'cancelled' };
-  }
-  if (p.status === 'running') {
-    if (!estimateMs) return { fraction: 1, method: 'running-no-estimate' };
-    return { fraction: Math.min(1, Math.max(0, nowMs - ms(p.start)) / estimateMs), method: 'running' };
-  }
-  if (p.finishUnknown) return { fraction: 1, method: 'finish-unknown' };
-  return { fraction: 1, method: 'finished' };
-}
 
 const overlapMs = (aStart, aEnd, bStart, bEnd) => Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
 
@@ -95,16 +76,6 @@ function outsideShareOf(p, holderReservations, graceMs) {
 
 function addMaterials(into, materials) {
   for (const m of materials) into[m.type] = round1((into[m.type] || 0) + m.grams);
-}
-
-// Per-filament grams scaled to what was used. Weight with no breakdown is
-// listed as "Unknown".
-function usedMaterials(p, fraction) {
-  const filaments = (p.filaments || []).filter((f) => f.grams != null);
-  if (filaments.length) {
-    return filaments.map((f) => ({ type: f.type || 'Unknown', color: f.color || null, grams: round1(f.grams * fraction) }));
-  }
-  return p.weightGrams != null ? [{ type: 'Unknown', color: null, grams: round1(p.weightGrams * fraction) }] : [];
 }
 
 // `assignments` maps a print id to { name, at } for prints with no

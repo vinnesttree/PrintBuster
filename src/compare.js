@@ -1,3 +1,5 @@
+import { cancelledUse } from './material.js';
+
 export const normalizeName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const ms = (iso) => Date.parse(iso);
@@ -194,8 +196,13 @@ export function buildComparison({
     // Weight is a slice estimate; duration is actual for finished prints and
     // estimated for ones still running.
     // A cancelled or failed print's weight is the slicer's estimate for the
-    // whole job, not what it used, so it isn't flagged as heavy.
-    const overWeight = p.status !== 'failed' && p.weightGrams != null && p.weightGrams > weightLimit;
+    // whole job, not what it used. Its estimated use (the share of its
+    // estimated time it ran) is what's flagged, and only when that share is
+    // known.
+    const cancelled = cancelledUse(p, now);
+    const overWeight = cancelled
+      ? !cancelled.upperBound && cancelled.grams != null && cancelled.grams > weightLimit
+      : p.weightGrams != null && p.weightGrams > weightLimit;
     const overTime = pEnd - pStart > durationLimitMs;
     const filaments = p.filaments || [];
     const materialTypes = [...new Set(filaments.map((f) => f.type).filter(Boolean))];
@@ -216,6 +223,8 @@ export function buildComparison({
       overTime,
       large: overWeight || overTime,
       materialTypes,
+      // For a cancelled or failed print, the estimate of what it used.
+      cancelledUse: cancelled,
       multiColor,
       multiMaterial,
       matchedReservations: matched.map((r) => ({ id: r.id, name: r.name, start: r.start, end: r.end, isEvent: Boolean(r.isEvent) })),

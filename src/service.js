@@ -239,7 +239,9 @@ export class CompareService {
     }
   }
 
-  async compare(isoDate, { force = false } = {}) {
+  // `fillMissing: false` (the guest view) reads saved reservations only, so
+  // a visitor without a sign-in can never make the server ask Design Hub.
+  async compare(isoDate, { force = false, fillMissing = true } = {}) {
     if (force) await this.refreshNow();
     const day = dayBounds(isoDate, this.config.timezone);
     const dayStart = Date.parse(day.start);
@@ -250,7 +252,7 @@ export class CompareService {
     // the previous evening.
     const hubDays = [shiftDate(isoDate, -1), isoDate];
     const [hub, cloud] = await Promise.all([
-      Promise.all(hubDays.map((d) => this.agendaDay(d, { force, fillMissing: true })))
+      Promise.all(hubDays.map((d) => this.agendaDay(d, { force, fillMissing })))
         .then((got) => ({ ok: true, got }), (error) => ({ ok: false, error })),
       this.bambuFor(`bambu:${isoDate}`, { sinceMs, untilMs, force }),
     ]);

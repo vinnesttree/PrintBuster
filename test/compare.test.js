@@ -294,6 +294,37 @@ describe('buildComparison', () => {
     assert.deepEqual([result.prints[0].overWeight, result.prints[0].large, result.summary.overWeight], [false, false, 0]);
   });
 
+  it('estimates what a cancelled print used from the share of its estimated time it ran', () => {
+    const filaments = [{ type: 'PLA', grams: 300, color: '#FF0000' }, { type: 'PETG', grams: 100, color: null }];
+    const r = compare([], [
+      // 1 h of a 4 h estimate: a quarter of 400 g, 20 m.
+      print('quarter', 'D-ADA', '2026-10-27T09:00', '2026-10-27T10:00', {
+        status: 'failed', weightGrams: 400, lengthMeters: 80, filaments, estimateSeconds: 4 * 3600, ranSeconds: 3600,
+      }),
+      // 3 h of a 4 h estimate: 750 g of 1000 g, over the 200 g limit.
+      print('heavy', 'D-ADA', '2026-10-27T11:00', '2026-10-27T14:00', {
+        status: 'failed', weightGrams: 1000, estimateSeconds: 4 * 3600, ranSeconds: 3 * 3600,
+      }),
+      print('noend', 'D-OHM', '2026-10-27T09:00', '2026-10-27T13:00', {
+        status: 'failed', weightGrams: 450, estimateSeconds: 4 * 3600, finishUnknown: true,
+      }),
+      print('done', 'D-OHM', '2026-10-27T14:00', '2026-10-27T15:00', { weightGrams: 50 }),
+    ], { flagWeightGrams: 200 });
+    const by = byId(r);
+    assert.deepEqual(by.quarter.cancelledUse, {
+      method: 'cancelled', fraction: 0.25, upperBound: false, grams: 100, lengthMeters: 20,
+      filaments: [{ type: 'PLA', grams: 75, color: '#FF0000' }, { type: 'PETG', grams: 25, color: null }],
+    });
+    assert.equal(by.quarter.weightGrams, 400, 'the slicer estimate is kept alongside');
+    assert.equal(by.quarter.overWeight, false);
+    assert.deepEqual([by.heavy.cancelledUse.grams, by.heavy.overWeight], [750, true]);
+    // How long it ran is unknown: the whole job's amount is an upper bound,
+    // which isn't flagged.
+    assert.deepEqual([by.noend.cancelledUse.method, by.noend.cancelledUse.upperBound, by.noend.cancelledUse.grams, by.noend.overWeight],
+      ['cancelled-end-unknown', true, 450, false]);
+    assert.equal(by.done.cancelledUse, null, 'only cancelled or failed prints get an estimate');
+  });
+
   it('a threshold of 0 disables that flag', () => {
     const prints = [print('heavy', 'D-ADA', '2026-10-27T00:00', '2026-10-27T20:00', { weightGrams: 900 })];
     const r = compare([], prints, { flagWeightGrams: 0, flagDurationHours: 0 });
