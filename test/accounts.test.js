@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import {
-  AccountStore, hashPassword, LoginLimiter, SessionStore, verifyPassword,
+  AccountStore, hashPassword, HashGate, LoginLimiter, SessionStore, verifyPassword,
 } from '../src/accounts.js';
 import { redactSecrets, safeNext } from '../src/auth.js';
 import { loadConfig } from '../src/config.js';
@@ -176,20 +176,74 @@ describe('session store', () => {
 });
 
 describe('sign-in limits', () => {
-  it('refuses a username after 5 failures and an address after 20, for 15 minutes', () => {
+  const fail = (limiter, who) => limiter.begin(who).finish(false);
+
+  it('refuses a username from one address after 5 failures, and an address after 20, for 15 minutes', () => {
     let clock = NOW;
     const limiter = new LoginLimiter({ now: () => clock });
     const who = { user: 'ana', address: '10.0.0.1' };
-    for (let i = 0; i < 4; i++) limiter.fail(who);
+    for (let i = 0; i < 4; i++) fail(limiter, who);
     assert.equal(limiter.retryAfter(who), 0);
-    limiter.fail(who);
+    fail(limiter, who);
     assert.equal(limiter.retryAfter(who), 15 * 60);
+    assert.equal(limiter.begin(who).wait, 15 * 60);
     clock += 15 * 60 * 1000;
     assert.equal(limiter.retryAfter(who), 0);
 
-    for (let i = 0; i < 20; i++) limiter.fail({ user: `u${i}`, address: '10.0.0.2' });
+    for (let i = 0; i < 20; i++) fail(limiter, { user: `u${i}`, address: '10.0.0.2' });
     assert.ok(limiter.retryAfter({ user: 'someone-else', address: '10.0.0.2' }) > 0);
     assert.equal(limiter.retryAfter({ user: 'someone-else', address: '10.0.0.3' }), 0);
+  });
+
+  it("doesn't let strangers lock someone out, but bounds guessing spread over many addresses", () => {
+    const limiter = new LoginLimiter({ now: () => NOW });
+    for (let i = 0; i < 49; i++) fail(limiter, { user: 'ana', address: `10.1.0.${i}` });
+    assert.equal(limiter.retryAfter({ user: 'ana', address: '192.168.1.5' }), 0, 'Ana can still sign in from her own address');
+    fail(limiter, { user: 'ana', address: '10.1.1.1' });
+    assert.ok(limiter.retryAfter({ user: 'ana', address: '10.2.0.1' }) > 0, '50 failures from anywhere stop all guessing');
+  });
+
+  it('counts attempts still being checked, so parallel guesses get no more tries', () => {
+    const limiter = new LoginLimiter({ now: () => NOW });
+    const who = { user: 'ana', address: '10.0.0.1' };
+    const started = Array.from({ length: 20 }, () => limiter.begin(who));
+    assert.equal(started.filter((a) => !a.wait).length, 5);
+    assert.ok(started.slice(5).every((a) => a.wait > 0));
+    // Ones turned away unchecked (busy) don't count as failures.
+    started[0].finish(null);
+    started[0].finish(false);
+    assert.equal(limiter.begin(who).wait, 0, 'a slot is free again');
+  });
+
+  it('a correct sign-in clears that address\u2019s failures for the username', () => {
+    const limiter = new LoginLimiter({ now: () => NOW });
+    const who = { user: 'ana', address: '10.0.0.1' };
+    for (let i = 0; i < 4; i++) fail(limiter, who);
+    limiter.begin(who).finish(true);
+    for (let i = 0; i < 4; i++) fail(limiter, who);
+    assert.equal(limiter.retryAfter(who), 0);
+  });
+});
+
+describe('hash gate', () => {
+  it('hashes a few passwords at a time and turns the rest away once its queue is full', async () => {
+    const gate = new HashGate({ concurrency: 2, queue: 3 });
+    let running = 0;
+    let most = 0;
+    const releases = [];
+    const job = () => gate.run(() => new Promise((resolve) => {
+      running++;
+      most = Math.max(most, running);
+      releases.push(() => { running--; resolve('done'); });
+    }));
+    const jobs = Array.from({ length: 5 }, job);
+    await assert.rejects(job(), (err) => err.code === 'busy');
+    while (releases.length) {
+      releases.shift()();
+      await new Promise((r) => setImmediate(r));
+    }
+    assert.deepEqual(await Promise.all(jobs), Array(5).fill('done'));
+    assert.equal(most, 2);
   });
 });
 
@@ -291,6 +345,35 @@ describe('signing in', () => {
     const limited = await api.login('admin', ADMIN_PASSWORD);
     assert.equal(limited.status, 429);
     assert.equal(limited.headers.get('retry-after'), '900');
+  });
+
+  it('checks at most 5 parallel guesses from one address', async () => {
+    const api = await start({ APP_PASSWORD: ADMIN_PASSWORD });
+    const results = await Promise.all(Array.from({ length: 30 }, (_, i) => api.login('admin', `parallel ${i}`)));
+    const statuses = results.map((r) => r.status);
+    assert.equal(statuses.filter((st) => st === 401).length, 5);
+    assert.equal(statuses.filter((st) => st === 429).length, 25);
+  });
+
+  it('turns sign-ins away as busy rather than stalling every page', async () => {
+    const api = await start({ APP_PASSWORD: ADMIN_PASSWORD });
+    const gate = api.app.locals.accounts.gate;
+    gate.maxQueue = 0;
+    gate.running = gate.concurrency;
+    try {
+      const res = await api.login('admin', ADMIN_PASSWORD);
+      assert.equal(res.status, 503);
+      assert.equal(res.headers.get('retry-after'), '5');
+      assert.equal((await api.request('/api/session')).status, 200);
+    } finally {
+      gate.running = 0;
+    }
+    assert.equal((await api.login('admin', ADMIN_PASSWORD)).status, 200, 'a busy refusal is not a failed guess');
+  });
+
+  it('redirects an encoded page name to sign-in too', async () => {
+    const api = await start({ APP_PASSWORD: ADMIN_PASSWORD });
+    assert.equal((await api.request('/%61dmin.html')).status, 302);
   });
 
   it('only accepts JSON from this site', async () => {

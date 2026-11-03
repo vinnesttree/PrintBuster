@@ -83,10 +83,11 @@ export const publicAccount = (a) => ({
 });
 
 export class AccountStore extends JsonFileStore {
-  constructor(file, { now = () => Date.now(), scryptParams = SCRYPT } = {}) {
+  constructor(file, { now = () => Date.now(), scryptParams = SCRYPT, gate = new HashGate() } = {}) {
     super(file, 'accounts');
     this.now = now;
     this.scryptParams = scryptParams;
+    this.gate = gate;
     this.accounts = new Map();
     // Checked against when the username doesn't exist, so a wrong username
     // takes as long as a wrong password and doesn't reveal which accounts exist.
@@ -129,10 +130,11 @@ export class AccountStore extends JsonFileStore {
     const account = typeof username === 'string' ? this.get(username) : null;
     if (!account) {
       this.dummyHash ??= hashPassword(crypto.randomBytes(16).toString('hex'), this.scryptParams);
-      await verifyPassword(String(password), await this.dummyHash);
+      const dummy = await this.dummyHash;
+      await this.gate.run(() => verifyPassword(String(password), dummy));
       return null;
     }
-    return (await verifyPassword(String(password), account.passwordHash)) ? account : null;
+    return (await this.gate.run(() => verifyPassword(String(password), account.passwordHash))) ? account : null;
   }
 
   async create({ username, password, role }) {
@@ -140,7 +142,7 @@ export class AccountStore extends JsonFileStore {
     checkRole(role);
     checkPassword(password, name);
     if (this.accounts.has(name)) throw new SourceError(`There is already an account called ${name}.`, { code: 'account_exists' });
-    const passwordHash = await hashPassword(password, this.scryptParams);
+    const passwordHash = await this.gate.run(() => hashPassword(password, this.scryptParams));
     // Checked again: another request may have created it while hashing.
     if (this.accounts.has(name)) throw new SourceError(`There is already an account called ${name}.`, { code: 'account_exists' });
     const at = new Date(this.now()).toISOString();
@@ -159,7 +161,7 @@ export class AccountStore extends JsonFileStore {
   async setPassword(username, password) {
     const account = this.require(username);
     checkPassword(password, account.username);
-    const passwordHash = await hashPassword(password, this.scryptParams);
+    const passwordHash = await this.gate.run(() => hashPassword(password, this.scryptParams));
     // The account may have been deleted while hashing.
     if (this.accounts.get(account.username) !== account) throw new SourceError('There is no such account.', { code: 'no_account' });
     account.passwordHash = passwordHash;
@@ -295,15 +297,28 @@ export class SessionStore extends JsonFileStore {
   }
 }
 
-// Failed sign-ins per username and per address, in a sliding window.
-// Over the limit, sign-in is refused (even with the right password) until
-// the window has passed.
+// Sign-in attempts in a sliding window, counted three ways:
+// - per username and address: 5 failures, then that address can't try that
+//   username again for the window. This is what stops guessing.
+// - per username, from anywhere: 50 failures. This bounds guessing spread
+//   over many addresses, but is high enough that a stranger can't easily
+//   lock someone out of their own account.
+// - per address: 20 failures, across usernames.
+// Attempts still being checked count as failures until they finish, so a
+// burst of parallel guesses gets no more tries than one at a time.
 export class LoginLimiter {
-  constructor({ now = () => Date.now(), windowMs = 15 * 60 * 1000, perUser = 5, perAddress = 20 } = {}) {
+  constructor({
+    now = () => Date.now(), windowMs = 15 * 60 * 1000, perUserAddress = 5, perUser = 50, perAddress = 20,
+  } = {}) {
     this.now = now;
     this.windowMs = windowMs;
-    this.limits = { user: perUser, address: perAddress };
+    this.limits = { userAddress: perUserAddress, user: perUser, address: perAddress };
     this.failures = new Map();
+    this.inFlight = new Map();
+  }
+
+  keys({ user, address }) {
+    return [['userAddress', `ua:${user}\n${address}`], ['user', `u:${user}`], ['address', `a:${address}`]];
   }
 
   recent(key) {
@@ -315,24 +330,79 @@ export class LoginLimiter {
   }
 
   // Seconds until a sign-in may be tried again, or 0 when it may now.
-  retryAfter({ user, address }) {
+  retryAfter(who) {
     let wait = 0;
-    for (const [kind, key] of [['user', `u:${user}`], ['address', `a:${address}`]]) {
+    for (const [kind, key] of this.keys(who)) {
       const list = this.recent(key);
-      if (list.length >= this.limits[kind]) {
-        wait = Math.max(wait, list[list.length - this.limits[kind]] + this.windowMs - this.now());
-      }
+      const pending = this.inFlight.get(key) || 0;
+      const over = list.length + pending - this.limits[kind];
+      if (over < 0) continue;
+      // Blocked until enough failures age out; if only attempts still being
+      // checked are in the way, until they finish.
+      wait = Math.max(wait, over < list.length ? list[over] + this.windowMs - this.now() : 1000);
     }
     return Math.ceil(wait / 1000);
   }
 
-  fail({ user, address }) {
-    for (const key of [`u:${user}`, `a:${address}`]) this.failures.set(key, [...this.recent(key), this.now()]);
+  // Starts an attempt, or returns the seconds to wait. Call the returned
+  // `finish(ok)` once the password has been checked.
+  begin(who) {
+    const wait = this.retryAfter(who);
+    if (wait) return { wait };
+    const keys = this.keys(who);
+    for (const [, key] of keys) this.inFlight.set(key, (this.inFlight.get(key) || 0) + 1);
+    let done = false;
+    // ok: true (signed in), false (wrong password) or null (not checked,
+    // e.g. turned away as busy: no guess was made, so nothing counts).
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      for (const [, key] of keys) {
+        const left = this.inFlight.get(key) - 1;
+        if (left > 0) this.inFlight.set(key, left);
+        else this.inFlight.delete(key);
+      }
+      if (ok === true) this.failures.delete(keys[0][1]);
+      else if (ok === false) this.fail(who);
+    };
+    return { wait: 0, finish };
+  }
+
+  fail(who) {
+    for (const [, key] of this.keys(who)) this.failures.set(key, [...this.recent(key), this.now()]);
     // Keeps the map from growing without bound under a spray of usernames.
     if (this.failures.size > 10000) for (const key of this.failures.keys()) this.recent(key);
   }
+}
 
-  succeed({ user }) {
-    this.failures.delete(`u:${user}`);
+// Limits how many passwords are hashed at once. Hashing runs on Node's small
+// pool of background threads, which file reads and writes share, so a flood
+// of sign-ins would otherwise stall every page. Past `queue` waiting, a
+// sign-in is turned away at once (503) instead of piling up.
+export class HashGate {
+  constructor({ concurrency = 2, queue = 32 } = {}) {
+    this.concurrency = concurrency;
+    this.maxQueue = queue;
+    this.running = 0;
+    this.waiting = [];
+  }
+
+  async run(fn) {
+    if (this.running >= this.concurrency) {
+      if (this.waiting.length >= this.maxQueue) {
+        throw new SourceError('PrintBuster is busy checking other sign-ins. Try again in a few seconds.', { code: 'busy' });
+      }
+      await new Promise((resolve) => this.waiting.push(resolve));
+    } else {
+      this.running++;
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiting.shift();
+      // Hands this slot straight to the next in line.
+      if (next) next();
+      else this.running--;
+    }
   }
 }

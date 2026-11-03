@@ -195,14 +195,19 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   });
 
   app.use((req, res, next) => {
-    if ((req.method === 'GET' || req.method === 'HEAD') && SIGNED_IN_PAGES.has(req.path) && !req.user) {
+    // Decoded, as the file server reads it, so /%61dmin.html is admin.html too.
+    let page = req.path;
+    try { page = decodeURIComponent(page); } catch { /* the file server rejects it */ }
+    if ((req.method === 'GET' || req.method === 'HEAD') && SIGNED_IN_PAGES.has(page) && !req.user) {
       const target = safeNext(req.originalUrl);
       return res.redirect(302, `/login.html${target === '/' ? '' : `?next=${encodeURIComponent(target)}`}`);
     }
     next();
   });
 
-  app.use(express.static(path.join(ROOT_DIR, 'public')));
+  // API requests never look for a file, so they don't wait on the disk.
+  const serveStatic = express.static(path.join(ROOT_DIR, 'public'));
+  app.use((req, res, next) => (/^\/api(\/|$)/i.test(req.path) ? next() : serveStatic(req, res, next)));
 
   // ------------------------------------------------ open to anyone
 
@@ -217,27 +222,33 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     });
   });
 
+  const tooMany = (res, wait, what) => {
+    res.set('Retry-After', String(wait));
+    const when = wait < 60 ? `${wait} s` : `${Math.ceil(wait / 60)} min`;
+    return res.status(429).json({ error: { message: `${what} Try again in ${when}.`, code: 'login_limited' } });
+  };
+
   app.post('/api/login', async (req, res) => {
     const { username, password, next } = req.body || {};
     if (typeof username !== 'string' || typeof password !== 'string' || !username || !password
       || username.length > 200 || password.length > 1024) {
       return res.status(400).json({ error: { message: 'Enter a username and password.', code: 'bad_login' } });
     }
-    const who = { user: username.trim().toLowerCase(), address: req.ip };
-    const wait = limiter.retryAfter(who);
-    if (wait) {
-      res.set('Retry-After', String(wait));
-      return res.status(429).json({
-        error: { message: `Too many failed sign-ins. Try again in ${Math.ceil(wait / 60)} min.`, code: 'login_limited' },
-      });
+    const who = { user: username.trim().toLowerCase().slice(0, 200), address: req.ip };
+    const attempt = limiter.begin(who);
+    if (attempt.wait) return tooMany(res, attempt.wait, 'Too many failed sign-ins.');
+    let account;
+    try {
+      account = await accounts.verify(username, password);
+      attempt.finish(Boolean(account));
+    } catch (err) {
+      attempt.finish(null);
+      throw err;
     }
-    const account = await accounts.verify(username, password);
     if (!account) {
-      limiter.fail(who);
       console.warn(`Sign-in failed for ${JSON.stringify(who.user.slice(0, 64))} from ${req.ip}.`);
       return res.status(401).json({ error: { message: 'Wrong username or password.', code: 'bad_login' } });
     }
-    limiter.succeed(who);
     // A fresh session every time, so a token set before sign-in is never reused.
     await sessions.revoke(readCookie(req, SESSION_COOKIE));
     const token = await sessions.create(account.username);
@@ -421,16 +432,20 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   app.post('/api/account/password', async (req, res) => {
     if (req.user.open) throw new SourceError('No one is signed in.', { code: 'not_signed_in' });
     const { currentPassword, newPassword } = req.body || {};
-    const who = { user: req.user.username, address: req.ip };
-    const wait = limiter.retryAfter(who);
-    if (wait) {
-      res.set('Retry-After', String(wait));
-      return res.status(429).json({ error: { message: `Too many wrong passwords. Try again in ${Math.ceil(wait / 60)} min.`, code: 'login_limited' } });
-    }
-    if (typeof currentPassword !== 'string' || currentPassword.length > 1024 || !await accounts.verify(req.user.username, currentPassword)) {
-      limiter.fail(who);
+    if (typeof currentPassword !== 'string' || currentPassword.length > 1024) {
       return res.status(400).json({ error: { message: 'Your current password is wrong.', code: 'bad_password' } });
     }
+    const attempt = limiter.begin({ user: req.user.username, address: req.ip });
+    if (attempt.wait) return tooMany(res, attempt.wait, 'Too many wrong passwords.');
+    let ok;
+    try {
+      ok = Boolean(await accounts.verify(req.user.username, currentPassword));
+      attempt.finish(ok);
+    } catch (err) {
+      attempt.finish(null);
+      throw err;
+    }
+    if (!ok) return res.status(400).json({ error: { message: 'Your current password is wrong.', code: 'bad_password' } });
     await accounts.setPassword(req.user.username, newPassword);
     await sessions.revokeUser(req.user.username, { exceptId: req.session.id });
     res.json({ ok: true });
@@ -476,7 +491,9 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     // Express's own 4xx errors, such as a body that isn't valid JSON.
     const clientError = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500;
     if (!(err instanceof SourceError) && !clientError) console.error(err);
-    res.status(err instanceof SourceError ? 400 : clientError ? err.status : 500).json({ error: describeError(err) });
+    if (err?.code === 'busy') res.set('Retry-After', '5');
+    const status = err?.code === 'busy' ? 503 : err instanceof SourceError ? 400 : clientError ? err.status : 500;
+    res.status(status).json({ error: describeError(err) });
   });
 
   return app;
