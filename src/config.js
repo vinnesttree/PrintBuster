@@ -99,6 +99,26 @@ export function parsePrinterMap(value) {
   return map;
 }
 
+// TRUST_PROXY, for Express's "trust proxy": empty (off), a number of
+// proxies, or addresses and subnets such as "loopback" or "10.0.0.0/8".
+function trustProxy(env) {
+  const v = str(env, 'TRUST_PROXY');
+  if (v === '' || ['0', 'false', 'no', 'off'].includes(v.toLowerCase())) return false;
+  if (/^\d+$/.test(v)) return Number(v);
+  if (['true', 'yes', 'on'].includes(v.toLowerCase())) return true;
+  return v;
+}
+
+function cookieSecure(env) {
+  const v = str(env, 'COOKIE_SECURE', 'auto').toLowerCase();
+  if (v === 'auto') return 'auto';
+  const b = bool(env, 'COOKIE_SECURE');
+  if (!['1', 'true', 'yes', 'on', '0', 'false', 'no', 'off'].includes(v)) {
+    throw new Error(`COOKIE_SECURE must be "auto", "true" or "false" (got "${v}")`);
+  }
+  return b;
+}
+
 export function loadConfig(env = process.env, argv = process.argv) {
   const designhub = {
     baseUrl: str(env, 'DESIGNHUB_BASE_URL', 'https://designhub-manager.unl.edu').replace(/\/+$/, ''),
@@ -139,8 +159,17 @@ export function loadConfig(env = process.env, argv = process.argv) {
     host: str(env, 'HOST', '127.0.0.1'),
     timezone,
     demo,
+    // While there is no admin account, PrintBuster creates one from these.
     appUsername: str(env, 'APP_USERNAME', 'admin'),
     appPassword: env.APP_PASSWORD ?? '',
+    // The waterfall without names or print titles, for anyone, at /guest.html.
+    guestView: bool(env, 'GUEST_VIEW') ?? true,
+    // A sign-in ends after this many days without use (and after 30 at most).
+    sessionDays: num(env, 'SESSION_DAYS', 7, { min: 0.01 }),
+    cookieSecure: cookieSecure(env),
+    trustProxy: trustProxy(env),
+    accountsPath: path.resolve(ROOT_DIR, str(env, 'ACCOUNTS_PATH', 'data/accounts.json')),
+    sessionsPath: path.resolve(ROOT_DIR, str(env, 'SESSIONS_PATH', 'data/sessions.json')),
     cacheSeconds: int(env, 'CACHE_SECONDS', 60, { min: 0 }),
     // The server collects from both sites every POLL_ACTIVE_MINUTES while a
     // page is open and every POLL_IDLE_MINUTES otherwise; 0 turns one off.

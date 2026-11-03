@@ -32,13 +32,21 @@ async function live(hubOverrides = {}, { collect = true } = {}) {
     DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
     BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
     RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json'),
-    ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'),
+    ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'), ACCOUNTS_PATH: path.join(dir, 'accounts.json'),
+    SESSIONS_PATH: path.join(dir, 'sessions.json'), APP_USERNAME: 'admin', APP_PASSWORD: 'correct horse battery',
   };
-  const app = await createApp(loadConfig(env, ['node', 'server.js']), { fetch: up.fetch, now: () => NOW });
+  const app = await createApp(loadConfig(env, ['node', 'server.js']), {
+    fetch: up.fetch, now: () => NOW, scryptParams: { N: 1024, r: 8, p: 1, keylen: 64 },
+  });
   if (collect) await app.locals.collector.runNow();
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   servers.push(server);
   const base = `http://127.0.0.1:${server.address().port}`;
+  const login = await fetch(`${base}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: env.APP_USERNAME, password: env.APP_PASSWORD }),
+  });
+  const auth = { Cookie: login.headers.get('set-cookie').split(';')[0] };
   const agendaDates = () => up.calls.filter((c) => c.url.includes('/admin/agenda/')).map((c) => new URL(c.url).searchParams.get('date'));
   return {
     app,
@@ -46,12 +54,12 @@ async function live(hubOverrides = {}, { collect = true } = {}) {
     dir,
     base,
     agendaDates,
-    get: (p) => fetch(base + p),
-    post: (p, body) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    get: (p) => fetch(base + p, { headers: auth }),
+    post: (p, body) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify(body) }),
     // Waits for the running import, then returns its status.
     finished: async () => {
       await app.locals.importer.running;
-      return (await fetch(`${base}/api/admin/import`)).json();
+      return (await fetch(`${base}/api/admin/import`, { headers: auth })).json();
     },
   };
 }
@@ -167,12 +175,19 @@ describe('admin: bulk reservation import', () => {
     const app = await createApp(loadConfig({
       DEMO_MODE: 'false', BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'),
       RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json'),
-      ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'),
-    }, ['node', 'server.js']), { fetch: up.fetch, now: () => NOW });
+      ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'), ACCOUNTS_PATH: path.join(dir, 'accounts.json'),
+      SESSIONS_PATH: path.join(dir, 'sessions.json'), APP_USERNAME: 'admin', APP_PASSWORD: 'correct horse battery',
+    }, ['node', 'server.js']), { fetch: up.fetch, now: () => NOW, scryptParams: { N: 1024, r: 8, p: 1, keylen: 64 } });
     const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     servers.push(server);
-    const r = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/import`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: '2026-10-01', to: '2026-10-02' }),
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const login = await fetch(`${base}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'correct horse battery' }),
+    });
+    const r = await fetch(`${base}/api/admin/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: login.headers.get('set-cookie').split(';')[0] },
+      body: JSON.stringify({ from: '2026-10-01', to: '2026-10-02' }),
     });
     assert.equal(r.status, 400);
     assert.equal((await r.json()).error.code, 'designhub_not_configured');

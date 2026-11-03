@@ -393,7 +393,7 @@ function memberNames() {
 // when `name` is empty, then reloads the range.
 async function assignPrint(printId, name) {
   try {
-    const res = await fetch('/api/usage/assign', {
+    const res = await apiFetch('/api/usage/assign', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printId, name }),
     });
     const json = await res.json();
@@ -491,7 +491,7 @@ async function load() {
   $('#users').classList.add('is-loading');
   $('#updated').textContent = 'Loading…';
   try {
-    const res = await fetch(`/api/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+    const res = await apiFetch(`/api/usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error?.message || `HTTP ${res.status}`);
     if (seq !== loadSeq) return;
@@ -513,7 +513,7 @@ async function init() {
   applyTheme(storedTheme());
   $('#theme-btn').addEventListener('click', () => applyTheme(THEMES[(THEMES.indexOf(storedTheme()) + 1) % THEMES.length]));
 
-  state.config = await (await fetch('/api/config')).json();
+  state.config = await (await apiFetch('/api/config')).json();
   const params = new URL(window.location.href).searchParams;
   const valid = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
   $('#to').value = valid(params.get('to')) ? params.get('to') : isoToday();

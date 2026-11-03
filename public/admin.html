@@ -18,16 +18,48 @@
     <nav class="pagenav" aria-label="Pages">
       <a href="./">Waterfall</a>
       <a href="usage.html">Filament usage</a>
-      <a href="admin.html" aria-current="page">Admin</a>
+      <a href="admin.html" aria-current="page" data-admin>Admin</a>
+      <a href="guest.html" data-guest hidden>Guest view</a>
     </nav>
     <div class="topbar-actions">
       <span id="demo-badge" class="badge" hidden>Demo data</span>
       <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Color theme">Theme: auto</button>
+      <div id="account-menu" class="account-menu"></div>
     </div>
   </header>
 
   <main class="admin-main">
     <div id="banners" aria-live="polite"></div>
+
+    <section id="accounts" class="card" aria-labelledby="accounts-title">
+      <div class="card-head">
+        <div>
+          <h2 id="accounts-title">Accounts</h2>
+          <p class="muted">Who can sign in. Admins can use this page; staff can use the waterfall and filament usage, and assign prints.</p>
+        </div>
+        <p class="muted rules">
+          Passwords need at least 10 characters and are stored only as salted hashes.
+          Setting someone's password, or deleting their account, signs them out everywhere.
+          There is always at least one admin.
+        </p>
+      </div>
+      <div id="account-list" class="table-wrap"></div>
+      <form id="account-form" class="admin-form" autocomplete="off">
+        <h3>Add an account</h3>
+        <div class="control-group">
+          <label class="field">Username <input id="new-username" type="text" maxlength="64" autocapitalize="none" spellcheck="false" autocomplete="off" required></label>
+          <label class="field">Password <input id="new-password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+          <label class="field">Role
+            <select id="new-role">
+              <option value="staff">Staff</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+          <button id="add-account" class="btn btn-primary" type="submit">Add</button>
+        </div>
+        <p id="account-msg" class="muted" role="status"></p>
+      </form>
+    </section>
 
     <section id="collect" class="card" aria-labelledby="collect-title">
       <div class="card-head">

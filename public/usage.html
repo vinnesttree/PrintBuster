@@ -18,11 +18,13 @@
     <nav class="pagenav" aria-label="Pages">
       <a href="./">Waterfall</a>
       <a href="usage.html" aria-current="page">Filament usage</a>
-      <a href="admin.html">Admin</a>
+      <a href="admin.html" data-admin>Admin</a>
+      <a href="guest.html" data-guest hidden>Guest view</a>
     </nav>
     <div class="topbar-actions">
       <span id="demo-badge" class="badge" hidden>Demo data</span>
       <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Color theme">Theme: auto</button>
+      <div id="account-menu" class="account-menu"></div>
     </div>
   </header>
 

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your account · PrintBuster</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='9' height='4' rx='1' fill='%232a78d6'/%3E%3Crect x='5' y='9' width='10' height='4' rx='1' fill='%23d03b3b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="live.js" defer></script>
+  <script src="account.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>PrintBuster</h1>
+      <p>Your account</p>
+    </div>
+    <nav class="pagenav" aria-label="Pages">
+      <a href="./">Waterfall</a>
+      <a href="usage.html">Filament usage</a>
+      <a href="admin.html" data-admin>Admin</a>
+      <a href="guest.html" data-guest hidden>Guest view</a>
+    </nav>
+    <div class="topbar-actions">
+      <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Color theme">Theme: auto</button>
+      <div id="account-menu" class="account-menu"></div>
+    </div>
+  </header>
+
+  <main class="auth-main">
+    <div id="banners" aria-live="polite"></div>
+
+    <section class="card auth-card" aria-labelledby="me-title">
+      <h2 id="me-title">Your account</h2>
+      <p id="me" class="muted saved-summary"></p>
+    </section>
+
+    <section class="card auth-card" aria-labelledby="password-title">
+      <h2 id="password-title">Change your password</h2>
+      <p class="muted">At least 10 characters. A few unrelated words make a strong one. Changing it signs you out everywhere else.</p>
+      <form id="password-form" class="auth-form">
+        <input type="text" name="username" id="pw-username" autocomplete="username" hidden>
+        <label class="auth-field">Current password
+          <input id="current" type="password" autocomplete="current-password" maxlength="256" required>
+        </label>
+        <label class="auth-field">New password
+          <input id="new" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+        </label>
+        <label class="auth-field">New password again
+          <input id="confirm" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+        </label>
+        <button id="save" class="btn btn-primary" type="submit">Change password</button>
+        <p id="password-msg" class="auth-msg" role="status"></p>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

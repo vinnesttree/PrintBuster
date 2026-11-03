@@ -2,7 +2,7 @@
 
 const $ = (sel) => document.querySelector(sel);
 // `status` is the import's; `admin` is the collection, Bambu and usage.
-const state = { config: null, status: null, admin: null, timer: null };
+const state = { config: null, status: null, admin: null, timer: null, accounts: { accounts: [], me: null } };
 // How often the page checks on an import while one is running.
 const POLL_MS = 1000;
 
@@ -50,8 +50,8 @@ const errorText = (e) => [e?.message, e?.hint].filter(Boolean).join(' ');
 
 async function api(path, body) {
   const res = body === undefined
-    ? await fetch(path)
-    : await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    ? await apiFetch(path)
+    : await apiFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const json = await res.json();
   if (!res.ok) throw new Error(errorText(json.error) || `HTTP ${res.status}`);
   return json;
@@ -245,6 +245,106 @@ async function bambuRestart() {
   await loadAdmin();
 }
 
+// ---------------------------------------------------------------- accounts
+
+const ROLES = { admin: 'Admin', staff: 'Staff' };
+
+function roleSelect(a) {
+  const select = el('select', { 'aria-label': `Role of ${a.username}` },
+    Object.entries(ROLES).map(([value, label]) => el('option', { value, selected: value === a.role }, label)));
+  select.addEventListener('change', () => accountAction(
+    () => api('/api/accounts/role', { username: a.username, role: select.value }),
+    `${a.username} is now ${ROLES[select.value].toLowerCase()}.`,
+  ));
+  return select;
+}
+
+// "Set password" opens a box for the new one in the account's row.
+function passwordCell(a) {
+  const cell = el('div', { className: 'assign-cell' });
+  const open = () => {
+    const input = el('input', {
+      type: 'password', minlength: '10', maxlength: '256', autocomplete: 'new-password', placeholder: 'New password',
+      'aria-label': `New password for ${a.username}`, required: true,
+    });
+    const form = el('form', {
+      className: 'assign-form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        accountAction(() => api('/api/accounts/password', { username: a.username, password: input.value }),
+          `Password set for ${a.username}${a.username === state.accounts.me ? '' : '; they were signed out everywhere'}.`);
+      },
+    }, input,
+    el('button', { className: 'btn btn-small', type: 'submit' }, 'Save'),
+    el('button', { className: 'btn btn-small', type: 'button', onclick: () => cell.replaceChildren(...buttons()) }, 'Cancel'));
+    cell.replaceChildren(form);
+    input.focus();
+  };
+  const buttons = () => [
+    el('button', { className: 'btn btn-small', type: 'button', onclick: open }, 'Set password'),
+    el('button', {
+      className: 'btn btn-small', type: 'button',
+      onclick: () => {
+        const self = a.username === state.accounts.me;
+        if (!window.confirm(self ? 'Delete your own account? You will be signed out.' : `Delete the account ${a.username}?`)) return;
+        accountAction(() => api('/api/accounts/delete', { username: a.username }), `Deleted ${a.username}.`);
+      },
+    }, 'Delete'),
+  ];
+  cell.append(...buttons());
+  return cell;
+}
+
+function renderAccounts() {
+  const { accounts, me } = state.accounts;
+  $('#account-list').replaceChildren(accounts.length
+    ? el('table', {},
+      el('thead', {}, el('tr', {}, ['Username', 'Role', 'Created', 'Last sign-in', ''].map((h) => el('th', { scope: 'col', text: h })))),
+      el('tbody', {}, accounts.map((a) => el('tr', {},
+        el('td', { className: 'member-name' }, a.username, a.username === me ? el('span', { className: 'tag', text: 'You' }) : null),
+        el('td', {}, roleSelect(a)),
+        el('td', { className: 'time', text: fmtDateTime(a.createdAt) }),
+        el('td', { className: 'time', text: a.lastLoginAt ? fmtDateTime(a.lastLoginAt) : 'Never' }),
+        el('td', {}, passwordCell(a))))))
+    : el('p', { className: 'empty', text: 'No accounts yet. Demo mode is open to anyone until you add one.' }));
+}
+
+async function loadAccounts() {
+  try {
+    state.accounts = await api('/api/accounts');
+    renderAccounts();
+  } catch (err) {
+    $('#account-msg').textContent = `Could not load the accounts: ${err.message}`;
+  }
+}
+
+// Runs an account change, then shows the list as the server has it.
+async function accountAction(fn, done) {
+  const msg = $('#account-msg');
+  msg.textContent = 'Saving…';
+  try {
+    const result = await fn();
+    msg.textContent = done;
+    if (result.accounts) state.accounts = { ...state.accounts, accounts: result.accounts };
+  } catch (err) {
+    msg.textContent = err.message;
+  }
+  // A change can end this sign-in (deleting yourself), or the open demo
+  // mode (adding its first account): reloading then goes to the sign-in page.
+  await loadAccounts();
+}
+
+async function addAccount(e) {
+  e.preventDefault();
+  const username = $('#new-username').value.trim();
+  const first = !state.accounts.accounts.length;
+  await accountAction(async () => {
+    const result = await api('/api/accounts', { username, password: $('#new-password').value, role: $('#new-role').value });
+    $('#account-form').reset();
+    return result;
+  }, first ? `Added ${username}. Sign-in is now required: sign in with it.` : `Added ${username}.`);
+}
+
 // ---------------------------------------------------------------- data
 
 // Checks on the import every second while it runs.
@@ -293,8 +393,15 @@ async function stopImport() {
 async function init() {
   applyTheme(storedTheme());
   $('#theme-btn').addEventListener('click', () => applyTheme(THEMES[(THEMES.indexOf(storedTheme()) + 1) % THEMES.length]));
-  state.config = await (await fetch('/api/config')).json();
+  state.config = await (await apiFetch('/api/config')).json();
   $('#demo-badge').hidden = !state.config.demo;
+  const session = await currentSession();
+  if (!session.open && session.user?.role !== 'admin') {
+    for (const section of document.querySelectorAll('main > section')) section.hidden = true;
+    $('#banners').replaceChildren(banner('icon-info', 'i', 'Only admins can use this page',
+      'Ask an admin if you need data collected, reservations imported or an account changed.'));
+    return;
+  }
 
   // Defaults to the 30 finished days before today.
   const yesterday = shift(state.config.today, -1);
@@ -316,9 +423,10 @@ async function init() {
   $('#recalc-total').addEventListener('click', recalculateTotal);
   $('#bambu-form').addEventListener('submit', bambuCode);
   $('#bambu-restart').addEventListener('click', bambuRestart);
+  $('#account-form').addEventListener('submit', addAccount);
   // Shows each collection's result as the server finishes it.
   liveUpdates(loadAdmin);
-  await Promise.all([loadAdmin(), poll()]);
+  await Promise.all([loadAdmin(), poll(), loadAccounts()]);
 }
 
 init().catch((err) => {

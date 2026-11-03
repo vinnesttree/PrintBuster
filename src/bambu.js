@@ -167,6 +167,12 @@ export class BambuClient {
     }
   }
 
+  // Every credential this client holds, so the server can make sure none
+  // ever reaches a browser. They are only for collecting data.
+  secrets() {
+    return [this.cfg.password, this.cfg.accessToken, this.token, this.pending?.tfaKey];
+  }
+
   status() {
     return {
       configured: this.cfg.configured,

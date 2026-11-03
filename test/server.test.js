@@ -10,23 +10,48 @@ import { createMockUpstream, task } from './helpers/mock-upstream.js';
 const servers = [];
 after(() => servers.forEach((s) => s.close()));
 
+// Cheap password hashing, so the tests don't spend seconds on it.
+export const FAST_SCRYPT = { N: 1024, r: 8, p: 1, keylen: 64 };
+const ADMIN_PASSWORD = 'correct horse battery';
+
+// Signs in and returns the session cookie.
+async function signIn(base, username, password) {
+  const res = await fetch(`${base}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }),
+  });
+  assert.equal(res.status, 200, `signing in as ${username}`);
+  return res.headers.get('set-cookie').split(';')[0];
+}
+
 // Like the real server, collects once at startup unless `collect: false`.
-async function start(env, { collect = true, ...opts } = {}) {
+// Unless `signIn: false`, it has an admin account (from APP_PASSWORD) and
+// get/post send its session cookie.
+async function start(env, { collect = true, signIn: withAccount = true, ...opts } = {}) {
   // Keep the saved reservations in the test's own folder, never in data/.
   if (env.PRINT_LOG_PATH && !env.RESERVATION_LOG_PATH) {
     const dir = path.dirname(env.PRINT_LOG_PATH);
-    env = { ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json'), ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json') };
+    env = {
+      ...env, RESERVATION_LOG_PATH: path.join(dir, 'reservations.json'), USAGE_LOG_PATH: path.join(dir, 'usage.json'),
+      ASSIGNMENT_LOG_PATH: path.join(dir, 'assignments.json'), ACCOUNTS_PATH: path.join(dir, 'accounts.json'), SESSIONS_PATH: path.join(dir, 'sessions.json'),
+    };
   }
-  const app = await createApp(loadConfig(env, ['node', 'server.js']), opts);
+  if (withAccount && !env.APP_PASSWORD) env = { ...env, APP_USERNAME: 'admin', APP_PASSWORD: ADMIN_PASSWORD };
+  const app = await createApp(loadConfig(env, ['node', 'server.js']), { scryptParams: FAST_SCRYPT, ...opts });
   if (collect) await app.locals.collector.runNow();
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   servers.push(server);
   const base = `http://127.0.0.1:${server.address().port}`;
+  const cookie = withAccount ? await signIn(base, env.APP_USERNAME || 'admin', env.APP_PASSWORD) : null;
+  const auth = cookie ? { Cookie: cookie } : {};
   return {
     app,
     base,
-    get: (p, headers) => fetch(base + p, { headers }),
-    post: (p, body) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    cookie,
+    signIn: (username, password) => signIn(base, username, password),
+    get: (p, headers) => fetch(base + p, { headers: { ...auth, ...headers } }),
+    post: (p, body, headers) => fetch(base + p, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...auth, ...headers }, body: JSON.stringify(body),
+    }),
   };
 }
 
@@ -201,15 +226,9 @@ describe('live mode', () => {
     assert.ok(data.prints.every((p) => p.match === 'unknown'));
   });
 
-  it('requires the app password when one is set', async () => {
-    const api = await start({ DEMO_MODE: 'true', APP_USERNAME: 'staff', APP_PASSWORD: 'p@ss' });
-    assert.equal((await api.get('/api/config')).status, 401);
-    const wrong = `Basic ${Buffer.from('staff:nope').toString('base64')}`;
-    assert.equal((await api.get('/api/config', { Authorization: wrong })).status, 401);
-    const right = `Basic ${Buffer.from('staff:p@ss').toString('base64')}`;
-    assert.equal((await api.get('/api/config', { Authorization: right })).status, 200);
-    // The container healthcheck has no credentials.
-    const health = await api.get('/healthz');
+  it('needs no sign-in for the container healthcheck', async () => {
+    const api = await start({ DEMO_MODE: 'true' }, { signIn: false, collect: false });
+    const health = await fetch(`${api.base}/healthz`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
   });
@@ -218,7 +237,7 @@ describe('live mode', () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
     const up = upstream('token');
     up.hub.password = 'changed';
-    const api = await start({ ...env(dir), BAMBU_ACCESS_TOKEN: 'env-token', APP_PASSWORD: 'p@ss' }, { fetch: up.fetch, now: () => NOW });
+    const api = await start({ ...env(dir), BAMBU_ACCESS_TOKEN: 'env-token' }, { fetch: up.fetch, now: () => NOW, signIn: false });
     const hub = await api.get('/healthz/designhub');
     assert.equal(hub.status, 503);
     assert.deepEqual(await hub.json(), {

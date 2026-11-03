@@ -18,11 +18,13 @@
     <nav class="pagenav" aria-label="Pages">
       <a href="./" aria-current="page">Waterfall</a>
       <a href="usage.html">Filament usage</a>
-      <a href="admin.html">Admin</a>
+      <a href="admin.html" data-admin>Admin</a>
+      <a href="guest.html" data-guest hidden>Guest view</a>
     </nav>
     <div class="topbar-actions">
       <span id="demo-badge" class="badge" hidden>Demo data</span>
       <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Color theme">Theme: auto</button>
+      <div id="account-menu" class="account-menu"></div>
     </div>
   </header>
 
@@ -62,6 +64,7 @@
           <li><span class="key key-est"></span>Still printing (estimated)</li>
           <li><span class="key key-multi"></span>Multi-colour or multi-material</li>
           <li><span class="key-chip">80 g</span>Filament used (slicer estimate)</li>
+          <li><span class="key-chip is-cancelled">~30 g</span>Cancelled: share it used (est.)</li>
           <li id="legend-heavy"><span class="key-chip is-heavy">250 g</span><span id="legend-heavy-text">Over 200 g</span></li>
         </ul>
       </div>
