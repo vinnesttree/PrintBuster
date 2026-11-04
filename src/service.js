@@ -23,6 +23,19 @@ const REFRESH_MIN_AGE_MS = 15 * 1000;
 // retry on every live update while Design Hub is down.
 const MISSING_DAY_RETRY_MS = 60 * 1000;
 
+// A print seen on the live feed is the same as a cloud print when they are
+// on one printer and overlap for most of the shorter of the two. A printer
+// runs one job at a time, so back-to-back prints overlap by seconds at most.
+export function sameAsCloudPrint(live, cloud) {
+  if (live.deviceId !== cloud.deviceId) return false;
+  const ls = Date.parse(live.start);
+  const le = Date.parse(live.end);
+  const cs = Date.parse(cloud.start);
+  const ce = Date.parse(cloud.end);
+  const overlap = Math.min(le, ce) - Math.max(ls, cs);
+  return overlap > 0 && overlap >= 0.5 * Math.min(le - ls, ce - cs);
+}
+
 // The per-print results of attributeUsage, as saved in the usage log.
 const usageRecords = (usage) => [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
   .map((r) => ({ ...r, counted: Boolean(r.reservation || r.assignedTo) && !r.excluded }));
@@ -56,11 +69,16 @@ async function mapLimit(items, limit, fn) {
 export class CompareService {
   constructor(config, {
     designhub, bambu, printLog = null, reservationArchive = null, usageLog = null, assignments = null, now = () => Date.now(),
+    liveLog = null, live = null,
   }) {
     this.config = config;
     this.designhub = designhub;
     this.bambu = bambu;
     this.printLog = printLog;
+    // Prints seen on the printers' live MQTT feed (bambulive.js), for the
+    // ones Bambu's cloud history leaves out, and the watcher that logs them.
+    this.liveLog = liveLog;
+    this.live = live;
     this.reservationArchive = reservationArchive;
     this.usageLog = usageLog;
     this.assignments = assignments;
@@ -76,6 +94,22 @@ export class CompareService {
     // it keeps current. Set the collector with attachCollector().
     this.collected = null;
     this.collector = null;
+  }
+
+  // Prints from the live feed that started in [sinceMs, untilMs), normalized
+  // like cloud prints and marked `source: 'live'`, leaving out any that are
+  // the same as one of `cloudPrints`. They have no filament weight.
+  livePrints(sinceMs, untilMs, cloudPrints, names, now) {
+    if (!this.liveLog) return [];
+    const printing = this.live ? this.live.activeIds() : new Set();
+    const out = [];
+    for (const t of this.liveLog.query(sinceMs, untilMs)) {
+      if (String(t.printType || '').toLowerCase() === 'cloud') continue;
+      const p = normalizeTask(t, names, now, { confirmed: printing.has(String(t.id)) });
+      if (!p || cloudPrints.some((c) => sameAsCloudPrint(p, c))) continue;
+      out.push({ ...p, source: 'live' });
+    }
+    return out;
   }
 
   attachCollector(collector) {
@@ -311,6 +345,7 @@ export class CompareService {
       prints = tasks
         .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
         .filter(Boolean);
+      prints.push(...this.livePrints(sinceMs, untilMs, prints, names, now));
     }
 
     const result = buildComparison({
@@ -475,9 +510,11 @@ export class CompareService {
 
     const names = new Map((devices || []).map((d) => [d.dev_id, d.name]));
     const missing = new Set(missingDays);
-    const prints = tasks
+    const cloudPrints = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
-      .filter((p) => p && !missing.has(todayIn(zone, new Date(p.start))));
+      .filter(Boolean);
+    const prints = [...cloudPrints, ...this.livePrints(rangeStart, rangeEnd, cloudPrints, names, now)]
+      .filter((p) => !missing.has(todayIn(zone, new Date(p.start))));
     // Runs past the range by the grace period, for bookings just after it
     // that a print in the range started in the grace period of.
     const comparison = buildComparison({
@@ -562,6 +599,7 @@ export class CompareService {
     const all = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
       .filter(Boolean);
+    all.push(...this.livePrints(-Infinity, Infinity, all, names, now));
     const prints = all.filter((p) => savedDays.has(todayIn(zone, new Date(p.start))));
 
     const graceMs = this.config.graceMinutes * 60000;

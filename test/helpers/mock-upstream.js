@@ -104,6 +104,10 @@ export function createMockUpstream({
       if (url.pathname === '/v1/iot-service/api/user/bind') {
         return json(200, { message: 'success', code: null, error: null, devices: bambuState.devices });
       }
+      // The numeric user id the live MQTT feed signs in with.
+      if (url.pathname === '/v1/design-user-service/my/preference') {
+        return json(200, { uid: 1234567, name: 'shop' });
+      }
       if (url.pathname === '/v1/user-service/my/tasks') {
         const limit = Math.min(Number(url.searchParams.get('limit') || 20), bambuState.maxPageSize);
         // Paged by `offset`, as Bambu Studio pages it. An `after` cursor is

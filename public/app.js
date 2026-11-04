@@ -222,10 +222,15 @@ function materialRows(p) {
   return rows;
 }
 
+// Prints seen only on the printers' live feed: not in Bambu's cloud history,
+// so Bambu gave no slicer estimate of their filament.
+const LIVE_NOTE = 'Seen on the printer\u2019s live feed, not in Bambu\u2019s print history (started from the SD card or sent over LAN), so its filament isn\u2019t known';
+
 function printTooltip(p, row) {
   return () => [
     el('div', { className: 'tt-title', text: p.title + (p.plate ? ` · ${p.plate}` : '') }),
     statusChip(p.match),
+    p.source === 'live' ? ttInfo(LIVE_NOTE) : null,
     noReservationText(p) ? ttInfo(noReservationText(p)) : null,
     p.uncoveredMinutes && p.match !== 'unknown' ? ttRow('Unreserved time', fmtDuration(p.uncoveredMinutes * 60000)) : null,
     ttRow('Printer', `${p.deviceName}${row.unmapped ? ' (not matched to a Design Hub model)' : ''}`),
@@ -616,7 +621,9 @@ function durationCell(p) {
 function materialCell(p) {
   const filaments = p.filaments || [];
   const amount = materialAmount(p);
-  if (!amount && !filaments.length) return '—';
+  if (!amount && !filaments.length) {
+    return p.source === 'live' ? el('span', { className: 'muted', title: LIVE_NOTE, text: 'Not known (live feed)' }) : '—';
+  }
   const text = [amount, p.materialTypes?.length ? p.materialTypes.join(', ') : null].filter(Boolean).join(' · ');
   return el('span', { className: 'cell-material', title: p.overWeight ? `Over ${state.data.flagWeightGrams} g` : undefined },
     p.overWeight ? el('span', { className: 'icon icon-partial', 'aria-hidden': 'true', text: '!' }) : null,

@@ -132,7 +132,7 @@ function renderBanners() {
   }
   if (d.totals?.printsWithoutWeight) {
     list.push(banner('icon-info', 'i', `${d.totals.printsWithoutWeight} print(s) had no filament weight`,
-      'Bambu did not report a weight for them, so they count as 0 g.'));
+      'Bambu did not report a weight for them, so they count as 0 g. Prints seen only on the printers\u2019 live feed (started from the SD card or sent over LAN) never have one.'));
   }
   $('#banners').replaceChildren(...list);
 }

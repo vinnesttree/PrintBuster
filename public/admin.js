@@ -165,6 +165,19 @@ function sourceItem(name, found) {
     : el('li', {}, icon('icon-bad', '✕'), `${name}: ${errorText(found.error)}`);
 }
 
+// The printers' live feed, which logs prints Bambu's history leaves out.
+function liveItem(live) {
+  if (!live) return null;
+  if (!live.enabled) return el('li', {}, icon('icon-info', 'i'), 'Printers\u2019 live feed: off');
+  const seen = live.log?.prints ? ` · ${plural(live.log.prints, 'print')} logged from it` : '';
+  if (live.connected) {
+    return el('li', {}, icon('icon-ok', '✓'), `Printers\u2019 live feed: connected to ${plural(live.printers, 'printer')}`
+      + `${live.lastMessageAt ? ` · last report ${fmtDateTime(live.lastMessageAt)}` : ''}${seen}`);
+  }
+  return el('li', {}, icon(live.error ? 'icon-bad' : 'icon-info', live.error ? '✕' : 'i'),
+    `Printers\u2019 live feed: ${live.error || (live.started ? 'connecting…' : 'not started')}${seen}`);
+}
+
 function renderAdmin() {
   const a = state.admin;
   const c = a.collected;
@@ -175,6 +188,7 @@ function renderAdmin() {
       a.collector.nextRunAt ? ` · next ${fmtClock(a.collector.nextRunAt)}` : ''),
     sourceItem('Design Hub', c?.designhub),
     sourceItem('Bambu', c?.bambu),
+    ...[liveItem(a.live)].filter(Boolean),
   );
 
   const b = a.bambu;

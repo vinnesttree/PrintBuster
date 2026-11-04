@@ -20,7 +20,7 @@ const PRINT_KEYS = [
   'deviceName', 'deviceModel', 'start', 'end', 'status', 'rawStatus', 'estimated', 'finishUnknown', 'overdue',
   'estimateMinutes', 'estimateSeconds', 'ranSeconds', 'weightGrams', 'lengthMeters', 'filaments', 'match',
   'uncoveredMinutes', 'noReservationReason', 'insideShare', 'uncovered', 'unmappedPrinter', 'overWeight', 'overTime',
-  'large', 'materialTypes', 'cancelledUse', 'multiColor', 'multiMaterial',
+  'large', 'materialTypes', 'cancelledUse', 'multiColor', 'multiMaterial', 'source',
 ];
 const SUMMARY_KEYS = [
   'reservations', 'prints', 'reserved', 'partial', 'unreserved', 'reservationsWithoutPrint',

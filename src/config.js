@@ -145,6 +145,11 @@ export function loadConfig(env = process.env, argv = process.argv) {
     maxTaskPages: int(env, 'BAMBU_MAX_TASK_PAGES', 10, { min: 1 }),
     // Pages the admin page's "Import Bambu history" reads at most.
     maxHistoryPages: int(env, 'BAMBU_HISTORY_MAX_PAGES', 400, { min: 1 }),
+    // Watch the printers' live status on Bambu's MQTT broker, to log prints
+    // the cloud history leaves out (SD card, LAN). On by default.
+    live: bool(env, 'BAMBU_LIVE') ?? true,
+    // Ask each printer for its full status after subscribing.
+    livePushall: bool(env, 'BAMBU_LIVE_PUSHALL') ?? true,
   };
   bambu.configured = Boolean((bambu.email && bambu.password) || bambu.accessToken);
 
@@ -152,6 +157,8 @@ export function loadConfig(env = process.env, argv = process.argv) {
   // app falls back to demo data only if neither source has credentials.
   const demoFlag = argv.includes('--demo') ? true : bool(env, 'DEMO_MODE');
   const demo = demoFlag ?? !(designhub.configured || bambu.configured);
+
+  const printLogPath = path.resolve(ROOT_DIR, str(env, 'PRINT_LOG_PATH', 'data/print-log.jsonl'));
 
   const timezone = str(env, 'TIMEZONE', 'America/Chicago');
   assertTimezone(timezone);
@@ -182,7 +189,9 @@ export function loadConfig(env = process.env, argv = process.argv) {
     // Flag a print as large above these. 0 turns a flag off.
     flagWeightGrams: num(env, 'FLAG_WEIGHT_GRAMS', 200, { min: 0 }),
     flagDurationHours: num(env, 'FLAG_DURATION_HOURS', 12, { min: 0 }),
-    printLogPath: path.resolve(ROOT_DIR, str(env, 'PRINT_LOG_PATH', 'data/print-log.jsonl')),
+    printLogPath,
+    // Prints seen on the live feed; next to the print log unless set.
+    liveLogPath: path.resolve(ROOT_DIR, str(env, 'BAMBU_LIVE_LOG_PATH', path.join(path.dirname(printLogPath), 'live-prints.jsonl'))),
     reservationLogPath: path.resolve(ROOT_DIR, str(env, 'RESERVATION_LOG_PATH', 'data/reservations.json')),
     usageLogPath: path.resolve(ROOT_DIR, str(env, 'USAGE_LOG_PATH', 'data/usage.json')),
     assignmentLogPath: path.resolve(ROOT_DIR, str(env, 'ASSIGNMENT_LOG_PATH', 'data/assignments.json')),

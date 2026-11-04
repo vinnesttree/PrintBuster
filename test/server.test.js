@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,6 +68,17 @@ describe('config', () => {
     assert.equal(loadConfig({ BAMBU_EMAIL: 'a', BAMBU_PASSWORD: 'b' }, []).demo, false);
     assert.equal(loadConfig({ DEMO_MODE: 'false' }, []).demo, false);
     assert.equal(loadConfig({ BAMBU_ACCESS_TOKEN: 't' }, ['node', 'x', '--demo']).demo, true);
+  });
+
+  it('watches the live feed by default, logging next to the print log', () => {
+    const c = loadConfig({ PRINT_LOG_PATH: '/srv/pb/print-log.jsonl' }, []);
+    assert.equal(c.bambu.live, true);
+    assert.equal(c.bambu.livePushall, true);
+    assert.equal(c.liveLogPath, '/srv/pb/live-prints.jsonl');
+    const off = loadConfig({ BAMBU_LIVE: 'false', BAMBU_LIVE_PUSHALL: 'no', BAMBU_LIVE_LOG_PATH: '/x/live.jsonl' }, []);
+    assert.equal(off.bambu.live, false);
+    assert.equal(off.bambu.livePushall, false);
+    assert.equal(off.liveLogPath, '/x/live.jsonl');
   });
 
   it('loads .env without overriding real environment variables', async () => {
@@ -165,6 +177,67 @@ describe('live mode', () => {
       },
     });
   }
+
+  it('shows a print from the printers’ live feed that Bambu’s history lacks', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
+    const up = upstream('token');
+    let clock = Date.parse('2026-10-27T20:50:00Z');
+    // Stands in for the MQTT broker.
+    const clients = [];
+    const mqttConnect = (url, opts) => {
+      const c = Object.assign(new EventEmitter(), {
+        url, opts, subs: [], subscribe(t, o, cb) { this.subs.push(t); cb?.(null); }, publish() {}, end() {},
+      });
+      clients.push(c);
+      return c;
+    };
+    const api = await start({ ...env(dir), GUEST_VIEW: 'true' }, { fetch: up.fetch, now: () => clock, mqttConnect });
+    // createApp never connects by itself; main() starts the feed.
+    assert.equal(clients.length, 0);
+    const live = api.app.locals.live;
+    await live.start();
+    const broker = clients[0];
+    assert.equal(broker.opts.username, 'u_1234567');
+    broker.emit('connect');
+    assert.deepEqual(broker.subs, ['device/D-ADA/report']);
+    const report = async (print) => {
+      broker.emit('message', 'device/D-ADA/report', Buffer.from(JSON.stringify({ print })));
+      await api.app.locals.service.liveLog.queue;
+    };
+    await report({ gcode_state: 'IDLE', print_type: 'idle' });
+    clock = Date.parse('2026-10-27T21:00:00Z'); // 4:00 pm
+    await report({ gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'SD job', mc_remaining_time: 60 });
+    clock = Date.parse('2026-10-27T22:00:00Z');
+    await report({ gcode_state: 'FINISH' });
+    clock = NOW;
+
+    const data = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const sd = data.prints.find((p) => p.source === 'live');
+    assert.ok(sd, 'the live print is on the waterfall');
+    assert.equal(sd.title, 'SD job');
+    assert.equal(sd.deviceName, 'Ada');
+    assert.equal(sd.status, 'finished');
+    assert.equal(sd.start, '2026-10-27T21:00:00.000Z');
+    assert.equal(sd.end, '2026-10-27T22:00:00.000Z');
+    assert.equal(sd.match, 'unreserved');
+    assert.equal(sd.weightGrams, null);
+    // The cloud prints are unchanged.
+    assert.deepEqual(data.prints.filter((p) => p.source !== 'live').map((p) => p.id), ['bb-1', 'bb-2']);
+
+    const guest = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
+    const guestSd = guest.prints.find((p) => p.source === 'live');
+    assert.equal(guestSd.title, 'Print');
+
+    const usage = await (await api.get('/api/usage?from=2026-10-27&to=2026-10-27')).json();
+    const listed = usage.unattributed.list.find((p) => p.id === sd.id);
+    assert.equal(listed.usedGrams, null);
+
+    const admin = await (await api.get('/api/admin/status')).json();
+    assert.equal(admin.live.connected, true);
+    assert.equal(admin.live.printers, 1);
+    assert.equal(admin.live.log.prints, 1);
+    live.stop();
+  });
 
   it('compares live data end to end, including the emailed-code sign-in', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));

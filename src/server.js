@@ -2,6 +2,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import express from 'express';
 import { BambuClient } from './bambu.js';
+import { LIVE_FIELDS, LivePrintWatcher } from './bambulive.js';
 import { loadConfig, loadEnvFile, ROOT_DIR } from './config.js';
 import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
@@ -31,10 +32,16 @@ function notConfigured(code, message, hint) {
 const SIGNED_IN_PAGES = new Set(['/', '/index.html', '/usage.html', '/admin.html', '/account.html']);
 
 // `scryptParams` is for tests only, which use cheaper password hashing.
-export async function createApp(config, { fetch = globalThis.fetch, now = () => Date.now(), scryptParams } = {}) {
+// `mqttConnect` stands in for mqtt.connect in tests. The live feed only
+// connects once main() starts it.
+export async function createApp(config, {
+  fetch = globalThis.fetch, now = () => Date.now(), scryptParams, mqttConnect,
+} = {}) {
   let designhub;
   let bambu;
   let printLog = null;
+  let liveLog = null;
+  let live = null;
   let reservationArchive = null;
   let usageLog = null;
   let assignments = null;
@@ -59,6 +66,16 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     await bambu.init();
     printLog = new PrintLog(config.printLogPath);
     await printLog.load();
+    if (config.bambu.configured && config.bambu.live) {
+      liveLog = new PrintLog(config.liveLogPath, { coverage: false, fields: LIVE_FIELDS });
+      await liveLog.load();
+      live = new LivePrintWatcher(
+        { region: config.bambu.region, pushall: config.bambu.livePushall },
+        // The printers come from the latest collection, so the feed adds no
+        // requests to Bambu's API beyond looking up the user id once.
+        { bambu, store: liveLog, devices: () => service.lastFetch?.devices || [], now, ...(mqttConnect ? { connect: mqttConnect } : {}) },
+      );
+    }
     reservationArchive = new ReservationArchive(config.reservationLogPath);
     await reservationArchive.load();
     usageLog = new UsageLog(config.usageLogPath);
@@ -73,7 +90,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   await createFirstAdmin(config, accounts, sessions);
   const limiter = new LoginLimiter({ now });
   const service = new CompareService(config, {
-    designhub, bambu, printLog, reservationArchive, usageLog, assignments, now,
+    designhub, bambu, printLog, reservationArchive, usageLog, assignments, now, liveLog, live,
   });
   const bambuStatus = () => (bambu.status ? bambu.status() : { configured: false });
   // Every credential the server holds is for collecting data only. None is
@@ -93,6 +110,9 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
     idleMs: config.pollIdleMinutes * 60000,
     now,
     onRun: () => {
+      // Connects the live feed once Bambu has signed in and listed the
+      // printers, follows new ones, and retries after a failure.
+      live?.sync();
       const status = collector.status();
       for (const res of streams) send(res, 'update', status);
       // Not awaited: a slow monitor must not hold up the next collection.
@@ -107,6 +127,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
   app.locals.service = service;
+  app.locals.live = live;
   app.locals.collector = collector;
   app.locals.kuma = kuma;
   app.locals.importer = importer;
@@ -374,6 +395,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
       collector: collector.status(),
       collected: found ? { at: new Date(found.at).toISOString(), designhub: source(found.designhub), bambu: source(found.bambu) } : null,
       bambu: bambuStatus(),
+      live: config.demo ? null : live ? { ...live.status(), log: liveLog.stats() } : { enabled: false },
       usageLog: service.usageLog ? service.usageLog.stats() : null,
       accounts: accounts.stats(),
     };
@@ -545,17 +567,20 @@ async function main() {
     if (pushes.length) console.log(`Reporting to Uptime Kuma after each collection: ${pushes.join(', ')}.`);
   });
   app.locals.collector.start();
+  app.locals.live?.start();
 
   // As PID 1 in a container, Node gets no default SIGTERM handling, so
   // `docker stop` would otherwise wait out its timeout and kill the process.
   const shutdown = () => {
     app.locals.collector.stop();
+    app.locals.live?.stop();
     app.locals.importer.stop();
     app.locals.bambuHistory.stop();
     app.locals.closeStreams();
     // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
       await app.locals.service.printLog?.queue;
+      await app.locals.service.liveLog?.queue;
       await app.locals.importer.running;
       await app.locals.bambuHistory.running;
       await app.locals.service.reservationArchive?.queue;
