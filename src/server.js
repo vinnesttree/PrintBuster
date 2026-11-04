@@ -402,7 +402,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
 
   app.post('/api/admin/import/stop', (req, res) => res.json(importer.stop()));
 
-  // Reads Bambu's whole print history into the print log, in the
+  // Reads all the print history Bambu keeps into the print log, in the
   // background; the admin page polls its progress.
   app.get('/api/admin/bambu-history', (req, res) => res.json(bambuHistory.status()));
 

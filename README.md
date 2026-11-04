@@ -25,7 +25,7 @@ The **Admin** page (`/admin.html`) holds every button that makes PrintBuster ask
 
 - **Data collection** shows when the server last collected and whether it could read each source. **Collect now** collects at once.
 - **Bambu sign-in** shows whether PrintBuster is signed in to Bambu, and takes the code when Bambu asks for one (see [Bambu sign-in codes](#bambu-sign-in-codes)).
-- **Import Bambu print history** reads the account's whole Bambu print history into the print log, back before PrintBuster started. See [Importing Bambu history](#importing-bambu-history).
+- **Import Bambu print history** reads everything Bambu still keeps (about the last 90 days) into the print log, including prints from before PrintBuster started. See [Importing Bambu history](#importing-bambu-history).
 - **Import reservations** reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations).
 - **Filament usage** has **Recalculate total**.
 
@@ -168,7 +168,7 @@ The resulting token is saved to `data/bambu-token.json` (git-ignored, readable o
 
 PrintBuster saves every print it sees to `data/print-log.jsonl`, and the pages draw prints from that log. The server's [data collection](#data-collection) checks Bambu every 15 minutes even when nobody has a page open, and every 2 minutes while someone does. Each collection reads the last two days of Bambu's print history, or back to the previous collection if PrintBuster was off for longer.
 
-Bambu's cloud keeps the account's whole print history, the list Bambu Studio's print history shows, so the log can also reach back before PrintBuster started: **Import Bambu history** on the Admin page reads all of it into the log. See [Importing Bambu history](#importing-bambu-history). With the reservations for those days [imported](#importing-reservations) too, you can go back to any day in the log and compare it against the agenda.
+Bambu's cloud keeps about the last 90 days of print history (the list Bambu Studio's print history shows) and then deletes it. Bambu's [Printing Information Statement](https://bambulab.com/en-us/policies/printing-information-statement) gives 90 days as the default and says it may change. So the log can reach back up to about 90 days before PrintBuster started: **Import Bambu history** on the Admin page reads everything Bambu still has into the log. See [Importing Bambu history](#importing-bambu-history). Prints older than that are gone from the cloud and can't be added. Once a print is in the log, it stays there after Bambu deletes it. With the reservations for those days [imported](#importing-reservations) too, you can go back to any day in the log and compare it against the agenda.
 
 - **What's in it.** One line of JSON per print, written when PrintBuster first sees the print and again whenever it changes (for example when it finishes). The last line for an `id` is the current one. Each line has the print's start and end times (UTC), the Bambu status, the printer, the job title and when it was recorded:
 
@@ -324,7 +324,7 @@ All three files are in `data/`, on the Docker volume, and readable only by the f
 The Admin page's buttons:
 
 - **Collect now** asks the server to collect now (yesterday, today and tomorrow, and recent prints).
-- **Import history** reads Bambu's whole print history into the print log. See [Importing Bambu history](#importing-bambu-history).
+- **Import history** reads everything Bambu still keeps of the print history (about 90 days) into the print log. See [Importing Bambu history](#importing-bambu-history).
 - **Import reservations** with **Skip days already saved as final** unticked re-reads every day in a range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. See [Importing reservations](#importing-reservations).
 - **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
 
@@ -343,7 +343,7 @@ Each day is one agenda request, read two at a time. The import runs on the serve
 
 ### Importing Bambu history
 
-Each collection only reads the last couple of days of Bambu's print history. To add older prints to the print log, use **Import Bambu history** on the Admin page. It reads the account's whole print history, newest first, 50 prints per request, until it reaches the oldest. It saves each page to the print log as it arrives, so if the import fails or is stopped, the pages already read are kept. It pauses briefly between pages, so a few thousand prints take a minute or two. The import runs on the server, so it keeps going if you close the page. **Stop** ends it after the page being read. Only one runs at a time.
+Each collection only reads the last couple of days of Bambu's print history. To add older prints to the print log, use **Import Bambu history** on the Admin page. It reads everything Bambu still keeps of the account's print history, newest first, 50 prints per request, until it reaches the oldest. Bambu deletes print history after about 90 days, so that is as far back as it goes; run it soon after setting PrintBuster up, before older prints expire. It saves each page to the print log as it arrives, so if the import fails or is stopped, the pages already read are kept. It pauses briefly between pages, so a few thousand prints take a minute or two. The import runs on the server, so it keeps going if you close the page. **Stop** ends it after the page being read. Only one runs at a time.
 
 - Prints already in the log are kept. Running it again adds only what's new.
 - **Recalculate all-time usage afterwards** (ticked by default) runs **Recalculate total** once it ends. Old prints are charged to members only for days whose reservations are saved, so [import the reservations](#importing-reservations) for the same days too, before or after.

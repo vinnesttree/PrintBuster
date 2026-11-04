@@ -1,11 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describeError, SourceError } from './errors.js';
 
-// The admin panel's Bambu history import: reads the account's whole print
-// history from the Bambu cloud into the print log, in the background. The
-// server's collection only reads the last two days of prints each time, so
-// this is how prints from before PrintBuster started are added. One import
-// runs at a time; the page polls its progress.
+// The admin panel's Bambu history import: reads everything the Bambu cloud
+// still keeps of the print history (about 90 days) into the print log, in
+// the background. The server's collection only reads the last two days of
+// prints each time, so this is how prints from before PrintBuster started
+// are added. One import runs at a time; the page polls its progress.
 
 // A short pause between pages, so a long history isn't read in one burst.
 const PAGE_PAUSE_MS = 250;

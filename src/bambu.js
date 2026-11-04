@@ -378,7 +378,7 @@ export class BambuClient {
   }
 
   // The account's print history, newest first, paged backwards until a page
-  // reaches `sinceMs` or the history ends. Bambu keeps far more than recent
+  // reaches `sinceMs` or the history ends. Bambu keeps about 90 days of
   // prints (the list Bambu Studio's print history shows). It is paged with
   // `offset`, as Bambu Studio does; an `after` cursor, which /my/messages
   // takes, appears to be ignored here and only ever returned the first page.
