@@ -213,6 +213,117 @@ describe('admin: bulk reservation import', () => {
   });
 });
 
+// 120 prints on Ada, two a day from May 1 to June 29, 2026 (Chicago time).
+function olderPrints() {
+  const out = [];
+  for (let i = 0; i < 120; i++) {
+    const day = new Date(Date.UTC(2026, 4, 1 + Math.floor(i / 2))).toISOString().slice(0, 10);
+    const [start, end] = i % 2 ? ['14:00', '15:00'] : ['09:10', '10:40'];
+    out.push(task(1000 + i, 'D-ADA', `${day}T${start}`, `${day}T${end}`, { weight: 10 }));
+  }
+  return out;
+}
+
+describe('admin: Bambu history import', () => {
+  it('reads prints older than the collection reaches into the print log', async () => {
+    const api = await live({
+      reservations: [{ name: 'Old Timer', tool: 'Bambu Lab X1 Carbon', model: 'Ada', start: '2026-05-01T09:00', end: '2026-05-01T12:00' }],
+    });
+    api.app.locals.bambuHistory.pauseMs = 0;
+    const idle = await (await api.get('/api/admin/bambu-history')).json();
+    assert.deepEqual([idle.job, idle.maxPages, idle.pageSize, idle.printLog.prints], [null, 400, 50, 1]);
+
+    // Bambu has months of prints the log never saw (as when the log began
+    // with paging that stopped after one page). Collections only look back
+    // two days, so they stop after the first page of them.
+    api.up.bambu.tasks.push(...olderPrints());
+    await api.app.locals.collector.runNow();
+    assert.equal((await (await api.get('/api/admin/bambu-history')).json()).printLog.prints, 50);
+
+    const r = await api.post('/api/admin/bambu-history', { recalculateTotal: true });
+    assert.equal(r.status, 202);
+    assert.equal((await r.json()).job.state, 'running');
+    await api.app.locals.bambuHistory.running;
+    const { job, printLog } = await (await api.get('/api/admin/bambu-history')).json();
+    assert.deepEqual(
+      [job.state, job.complete, job.pages, job.prints, job.total, job.added, job.oldest, job.error],
+      ['done', true, 3, 121, 121, 71, '2026-05-01T14:10:00.000Z', null],
+    );
+    assert.equal(printLog.prints, 121);
+    assert.equal(printLog.since, '2026-05-01T14:10:00.000Z');
+    const offsets = api.up.calls.filter((c) => c.url.includes('/my/tasks')).slice(-3).map((c) => new URL(c.url).searchParams.get('offset'));
+    assert.deepEqual(offsets, ['0', '50', '100']);
+
+    // Saved to disk, with the time it covers, so it survives a restart.
+    const lines = (await fs.readFile(path.join(api.dir, 'print-log.jsonl'), 'utf8')).trim().split('\n');
+    assert.ok(lines.some((l) => JSON.parse(l).id === '1000' && JSON.parse(l).deviceName === 'Ada'));
+    const coverage = JSON.parse(await fs.readFile(path.join(api.dir, 'print-log.coverage.json'), 'utf8'));
+    assert.equal(coverage.intervals[0][0], '2026-05-01T14:10:00.000Z');
+
+    // With that day's reservations imported, the old print is charged.
+    assert.equal(job.totalRecalculation.ok, true);
+    await api.post('/api/admin/import', { from: '2026-05-01', to: '2026-05-01', recalculateTotal: true });
+    await api.finished();
+    const usage = await (await api.get('/api/usage?from=2026-05-01&to=2026-05-01')).json();
+    assert.deepEqual(usage.users.map((u) => [u.name, u.grams]), [['Old Timer', 10]]);
+
+    // Run again: everything is already in the log.
+    await api.post('/api/admin/bambu-history', {});
+    await api.app.locals.bambuHistory.running;
+    const again = (await (await api.get('/api/admin/bambu-history')).json()).job;
+    assert.deepEqual([again.state, again.prints, again.added, again.totalRecalculation], ['done', 121, 0, null]);
+  });
+
+  it('runs one at a time, stops when asked and keeps the pages read', async () => {
+    const api = await live();
+    api.up.bambu.tasks.push(...olderPrints(), ...olderPrints().map((t) => ({ ...t, id: t.id + 1000 })));
+    api.app.locals.bambuHistory.pauseMs = 300;
+    assert.equal((await api.post('/api/admin/bambu-history', {})).status, 202);
+    const second = await api.post('/api/admin/bambu-history', {});
+    assert.equal(second.status, 409);
+    assert.equal((await second.json()).error.code, 'import_running');
+
+    const stopped = await (await api.post('/api/admin/bambu-history/stop', {})).json();
+    assert.equal(stopped.job.stopReason, 'stopped');
+    await api.app.locals.bambuHistory.running;
+    const { job, printLog } = await (await api.get('/api/admin/bambu-history')).json();
+    assert.deepEqual([job.state, job.complete], ['stopped', false]);
+    assert.ok(job.prints < 241, `stopped early (${job.prints} of 241)`);
+    assert.equal(printLog.prints, job.prints);
+  });
+
+  it('stops at the page limit and says so', async () => {
+    const api = await live();
+    api.up.bambu.tasks.push(...olderPrints());
+    api.app.locals.bambuHistory.pauseMs = 0;
+    api.app.locals.service.config.bambu.maxHistoryPages = 2;
+    await api.post('/api/admin/bambu-history', {});
+    await api.app.locals.bambuHistory.running;
+    const { job } = await (await api.get('/api/admin/bambu-history')).json();
+    assert.deepEqual([job.state, job.stopReason, job.complete, job.pages, job.prints], ['stopped', 'page_limit', false, 2, 100]);
+  });
+
+  it('reports a Bambu failure', async () => {
+    const api = await live();
+    api.up.bambu.validTokens.clear();
+    await api.post('/api/admin/bambu-history', { recalculateTotal: true });
+    await api.app.locals.bambuHistory.running;
+    const { job } = await (await api.get('/api/admin/bambu-history')).json();
+    assert.deepEqual([job.state, job.error.code, job.added, job.totalRecalculation], ['failed', 'bambu_auth', 0, null]);
+  });
+
+  it('refuses in demo mode, which keeps no print log', async () => {
+    const app = await createApp(loadConfig({ DEMO_MODE: 'true' }, ['node', 'server.js']), { now: () => NOW });
+    const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const r = await fetch(`${base}/api/admin/bambu-history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(r.status, 400);
+    assert.equal((await r.json()).error.code, 'demo');
+    assert.deepEqual(await (await fetch(`${base}/api/admin/bambu-history`)).json(), { job: null, maxPages: 400, pageSize: 50, printLog: null });
+  });
+});
+
 describe('admin: collection and status', () => {
   it('reports the last collection and Bambu sign-in, and collects on request', async () => {
     const api = await live({}, { collect: false });

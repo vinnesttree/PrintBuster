@@ -106,9 +106,10 @@ export function createMockUpstream({
       }
       if (url.pathname === '/v1/user-service/my/tasks') {
         const limit = Math.min(Number(url.searchParams.get('limit') || 20), bambuState.maxPageSize);
-        const after = url.searchParams.get('after');
+        // Paged by `offset`, as Bambu Studio pages it. An `after` cursor is
+        // ignored, as the real service appears to.
+        const from = Math.max(0, Number(url.searchParams.get('offset') || 0));
         const sorted = [...bambuState.tasks].sort((a, b) => Date.parse(b.startTime) - Date.parse(a.startTime));
-        const from = after ? sorted.findIndex((t) => String(t.id) === after) + 1 : 0;
         return json(200, { total: sorted.length, hits: sorted.slice(from, from + limit) });
       }
       return json(404, { message: 'not found' });

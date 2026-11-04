@@ -117,18 +117,36 @@ export class CompareService {
     }, force);
   }
 
+  // Reads Bambu's print history back to its start (or as far as `maxPages`
+  // pages reach) into the print log, saving each page as it arrives so a
+  // failure keeps what was read. `onPage` is getTasks's: false stops.
+  async importBambuHistory({ maxPages, onPage } = {}) {
+    const devices = await this.bambu.getDevices();
+    return this.bambu.getTasks({
+      sinceMs: 0,
+      maxPages,
+      onPage: async (page) => {
+        if (this.printLog) await this.printLog.record({ tasks: page.hits, devices, fetchedAt: this.now() });
+        return onPage?.(page);
+      },
+    });
+  }
+
   // One server-side collection, run by the Collector: Bambu's devices and
-  // recent prints into the print log (everything Bambu still has when the
-  // log is empty), yesterday's (until final), today's and tomorrow's agenda
-  // into the saved reservations, then a few finished days still missing a
-  // final copy.
+  // recent prints into the print log (the last two days, or back to the end
+  // of the last collection when PrintBuster was off for longer; as much as
+  // BAMBU_MAX_TASK_PAGES pages hold when the log is empty), yesterday's
+  // (until final), today's and tomorrow's agenda into the saved
+  // reservations, then a few finished days still missing a final copy.
   // Failures are recorded for the pages and logged once, not every run.
   async collect() {
     const now = this.now();
     const today = todayIn(this.config.timezone, new Date(now));
     const collectDays = [shiftDate(today, -1), today, shiftDate(today, 1)];
     const days = collectDays.filter((d) => !this.reservationArchive?.get(d)?.final);
-    const sinceMs = this.printLog && !this.printLog.coverage().length ? 0 : now - PRINT_LOOKBACK_MS;
+    const coverage = this.printLog?.coverage() || [];
+    const lastSeen = coverage.length ? coverage.at(-1)[1] : null;
+    const sinceMs = this.printLog && lastSeen === null ? 0 : Math.min(now - PRINT_LOOKBACK_MS, lastSeen ?? Infinity);
     // How long each source took, reported to uptime monitors.
     const took = {};
     const timed = (name, promise) => promise.finally(() => { took[name] = this.now() - now; });

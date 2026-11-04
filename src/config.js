@@ -143,6 +143,8 @@ export function loadConfig(env = process.env, argv = process.argv) {
     tokenCachePath: path.resolve(ROOT_DIR, str(env, 'BAMBU_TOKEN_CACHE', 'data/bambu-token.json')),
     taskPageSize: int(env, 'BAMBU_TASK_PAGE_SIZE', 50, { min: 1 }),
     maxTaskPages: int(env, 'BAMBU_MAX_TASK_PAGES', 10, { min: 1 }),
+    // Pages the admin page's "Import Bambu history" reads at most.
+    maxHistoryPages: int(env, 'BAMBU_HISTORY_MAX_PAGES', 400, { min: 1 }),
   };
   bambu.configured = Boolean((bambu.email && bambu.password) || bambu.accessToken);
 

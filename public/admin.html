@@ -88,6 +88,35 @@
       <p id="bambu-msg" class="muted saved-summary" role="status"></p>
     </section>
 
+    <section id="bambu-history" class="card" aria-labelledby="bambu-history-title">
+      <div class="card-head">
+        <div>
+          <h2 id="bambu-history-title">Import Bambu print history</h2>
+          <p id="history-log" class="muted"></p>
+        </div>
+        <p class="muted rules">
+          Bambu keeps the account's whole print history (the one Bambu Studio's print history shows), but each collection only reads the last two days of it.
+          This reads all of it, newest first, into the print log, so older days can be compared and their filament counted.
+          Prints already in the log are kept. The import keeps running if you leave this page.
+          To charge older prints to members, also import the reservations for those days below.
+        </p>
+      </div>
+      <div class="control-group admin-options">
+        <label class="check"><input id="history-recalc" type="checkbox" checked> Recalculate all-time usage afterwards</label>
+      </div>
+      <div class="control-group admin-actions">
+        <button id="history-start" class="btn btn-primary" type="button">Import history</button>
+        <button id="history-stop" class="btn" type="button" hidden>Stop</button>
+        <span id="history-msg" class="muted" role="status"></span>
+      </div>
+      <div id="history-progress" class="import-progress" aria-live="polite" hidden>
+        <div class="progress-bar" role="progressbar" aria-label="Bambu history import progress" aria-valuemin="0" aria-valuemax="100">
+          <span></span>
+        </div>
+        <p id="history-text"></p>
+      </div>
+    </section>
+
     <section id="import" class="card" aria-labelledby="import-title">
       <div class="card-head">
         <div>
