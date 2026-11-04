@@ -584,11 +584,11 @@ function renderBanners() {
   $('#banners').replaceChildren(...list);
 }
 
-// Bambu keeps about a day of history; explain spans nobody observed.
+// Explain spans of time the print log never observed.
 function gapBanner(gaps, log, printsAvailable) {
   const fmtGap = (g) => `${fmtWhen(ms(g.start))} – ${fmtWhen(ms(g.end))}`;
   const since = log?.since ? `PrintBuster's print log starts ${fmtDayShort(ms(log.since))}, ${fmtClock(ms(log.since))}.` : 'Nothing has been saved to the print log yet.';
-  const intro = `Bambu only keeps about a day of print history, so PrintBuster saves every print it sees. ${since}`;
+  const intro = `PrintBuster draws prints from its print log. ${since}${GUEST ? '' : ' An admin can add older prints with Import Bambu history on the Admin page.'}`;
   if (!printsAvailable) {
     return banner('icon-partial', '!', 'No Bambu print data for this day',
       `${intro} Nothing was observed on this day, so its prints can't be checked.`);

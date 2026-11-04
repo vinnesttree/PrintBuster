@@ -25,6 +25,7 @@ The **Admin** page (`/admin.html`) holds every button that makes PrintBuster ask
 
 - **Data collection** shows when the server last collected and whether it could read each source. **Collect now** collects at once.
 - **Bambu sign-in** shows whether PrintBuster is signed in to Bambu, and takes the code when Bambu asks for one (see [Bambu sign-in codes](#bambu-sign-in-codes)).
+- **Import Bambu print history** reads the account's whole Bambu print history into the print log, back before PrintBuster started. See [Importing Bambu history](#importing-bambu-history).
 - **Import reservations** reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations).
 - **Filament usage** has **Recalculate total**.
 
@@ -122,6 +123,8 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `POLL_ACTIVE_MINUTES`, `POLL_IDLE_MINUTES` | How often the server [collects data](#data-collection) from Design Hub and Bambu: every `POLL_ACTIVE_MINUTES` (default 2) while anyone has a page open, every `POLL_IDLE_MINUTES` (default 15) while nobody does. Decimals are allowed. `0` turns that schedule off. `BAMBU_POLL_MINUTES` still works as the older name for `POLL_IDLE_MINUTES`. |
 | `CACHE_SECONDS` | How long demo mode reuses its generated prints. Default 60. Live data is never re-read on page loads (see [data collection](#data-collection)). |
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
+| `BAMBU_TASK_PAGE_SIZE`, `BAMBU_MAX_TASK_PAGES` | How many prints each request to Bambu's print history asks for (default 50), and how many pages one collection reads at most (default 10). |
+| `BAMBU_HISTORY_MAX_PAGES` | How many pages **Import Bambu history** on the Admin page reads at most. Default 400, so 20,000 prints at 50 a page. |
 | `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
 | `ASSIGNMENT_LOG_PATH` | Where prints staff assigned to a member are kept. Default `data/assignments.json`. |
@@ -163,7 +166,9 @@ The resulting token is saved to `data/bambu-token.json` (git-ignored, readable o
 
 ### Print log
 
-Bambu's cloud only keeps about a day of print history, so PrintBuster saves every print it sees to `data/print-log.jsonl`. The server's [data collection](#data-collection) checks Bambu every 15 minutes even when nobody has a page open, and every 2 minutes while someone does. That lets you go back to any day since the log started and still compare it against the agenda.
+PrintBuster saves every print it sees to `data/print-log.jsonl`, and the pages draw prints from that log. The server's [data collection](#data-collection) checks Bambu every 15 minutes even when nobody has a page open, and every 2 minutes while someone does. Each collection reads the last two days of Bambu's print history, or back to the previous collection if PrintBuster was off for longer.
+
+Bambu's cloud keeps the account's whole print history, the list Bambu Studio's print history shows, so the log can also reach back before PrintBuster started: **Import Bambu history** on the Admin page reads all of it into the log. See [Importing Bambu history](#importing-bambu-history). With the reservations for those days [imported](#importing-reservations) too, you can go back to any day in the log and compare it against the agenda.
 
 - **What's in it.** One line of JSON per print, written when PrintBuster first sees the print and again whenever it changes (for example when it finishes). The last line for an `id` is the current one. Each line has the print's start and end times (UTC), the Bambu status, the printer, the job title and when it was recorded:
 
@@ -171,8 +176,8 @@ Bambu's cloud only keeps about a day of print history, so PrintBuster saves ever
   {"id":"123456","startTime":"2026-10-27T14:10:00Z","endTime":"2026-10-27T15:40:00Z","status":2,"deviceId":"01P00A350100003","deviceName":"Faraday","title":"Bracket batch","costTime":5400,"recordedAt":"2026-10-27T15:45:02.000Z"}
   ```
 
-- **Gaps.** Next to it, `print-log.coverage.json` lists the time spans PrintBuster actually observed. If PrintBuster was off for longer than Bambu keeps history, some prints are never seen. The page then says which hours of the day have no data. It also won't mark reservations in those hours as "no print recorded", and before the log started it shows "—" instead of zero counts.
-- **Unknown finishes.** If a print was still running the last time PrintBuster saw it, and Bambu forgot it before it finished, it shows as "Finish not recorded" and is drawn to its estimated end.
+- **Gaps.** Next to it, `print-log.coverage.json` lists the time spans PrintBuster actually observed. Time before the log's first print, or a span a collection couldn't read to the end, is a gap. The page then says which hours of the day have no data, and **Import Bambu history** fills it in. It also won't mark reservations in those hours as "no print recorded", and before the log started it shows "—" instead of zero counts.
+- **Unknown finishes.** If a print was still running the last time PrintBuster saw it, and no later read found it again (for example, Bambu removed it), it shows as "Finish not recorded" and is drawn to its estimated end.
 - **Size.** About one or two lines per print, so a busy year is a few megabytes.
 
 ### Finding the Design Hub session cookie
@@ -225,13 +230,13 @@ The server, not the browser, fetches data from Design Hub and Bambu, on its own 
 - **Every 2 minutes while anyone has a page open** (`POLL_ACTIVE_MINUTES`), whether that's the waterfall or the usage page, in any number of browsers.
 - **Every 15 minutes while nobody does** (`POLL_IDLE_MINUTES`), so the print log and saved reservations keep filling with no one watching.
 
-Each collection reads Bambu's printers and recent prints into the print log. It reads yesterday's (until it's final), today's and tomorrow's agenda into the saved reservations. It also saves a few finished days that are still missing, back to the day before the print log began.
+Each collection reads Bambu's printers and recent prints into the print log: the last two days, or back to the previous collection after PrintBuster was off. It reads yesterday's (until it's final), today's and tomorrow's agenda into the saved reservations. It also saves a few finished days that are still missing, back to the day before the print log began.
 
 **Pages read saved data:** the print log, the saved reservations and usage, and what the last collection found. Loading or reloading a page, changing the date or range, and the live updates make no request to Design Hub or Bambu, so ten viewers cause no more requests than one. Only these do:
 
 - the server's schedule;
 - the waterfall, once, for a day whose reservations aren't saved yet (below);
-- **Collect now** and **Import reservations** on the Admin page;
+- **Collect now**, **Import Bambu history** and **Import reservations** on the Admin page;
 - signing in to Bambu with an emailed code, also on the Admin page.
 
 How it fits together:
@@ -262,7 +267,7 @@ Bambu has no official public API. This uses the endpoints that Bambu's own apps 
 
 - `POST /v1/user-service/user/login` to sign in (email code: `/user/sendemail/code`)
 - `GET /v1/iot-service/api/user/bind` for the printers on the account
-- `GET /v1/user-service/my/tasks` for print history, newest first, paged back to 48 hours before the selected day
+- `GET /v1/user-service/my/tasks?limit=…&offset=…` for print history, newest first. It is paged with `offset`, the way Bambu Studio's print history pages it ([TaskManager.cpp](https://github.com/bambulab/BambuStudio/blob/12f17b06f4f537f9c03162d08bb70cf733c42839/src/slic3r/GUI/TaskManager.cpp#L325-L329); the request seen on the wire is documented in [open-bamboo-networking](https://github.com/ClusterM/open-bamboo-networking/blob/main/research/08.10-http.md)). The response gives `total`, the number of prints on the account, and a page of `hits`. Each collection reads pages until it passes two days ago (or the previous collection). **Import Bambu history** reads every page.
 
 Every successful fetch is also saved to the [print log](#print-log), and the page draws prints from that log.
 
@@ -319,6 +324,7 @@ All three files are in `data/`, on the Docker volume, and readable only by the f
 The Admin page's buttons:
 
 - **Collect now** asks the server to collect now (yesterday, today and tomorrow, and recent prints).
+- **Import history** reads Bambu's whole print history into the print log. See [Importing Bambu history](#importing-bambu-history).
 - **Import reservations** with **Skip days already saved as final** unticked re-reads every day in a range from Design Hub, including saved final days, so corrections made in Design Hub afterwards are picked up. See [Importing reservations](#importing-reservations).
 - **Recalculate total** recalculates every print in the print log against the saved reservations, with no Design Hub or Bambu requests, and saves the results to `usage.json`. Prints that started on a day with no saved reservations are left as they were, and the count of those is recorded. Use it after the rules change, or to bring all-time totals up to date for prints that no range view has covered yet.
 
@@ -334,6 +340,15 @@ The server's collection saves finished days a few at a time, and only back to th
 4. Press **Import**.
 
 Each day is one agenda request, read two at a time. The import runs on the server, so it keeps going if you close the page. Open the page again to see its progress. **Stop** ends it after the days being read. Only one import runs at a time. If Design Hub fails 5 days in a row, the import stops by itself. Days that failed are listed with the reason, and you can import them again later. Days read after they ended are saved as final, like any other saved day, and days still to come are saved as not final.
+
+### Importing Bambu history
+
+Each collection only reads the last couple of days of Bambu's print history. To add older prints to the print log, use **Import Bambu history** on the Admin page. It reads the account's whole print history, newest first, 50 prints per request, until it reaches the oldest. It saves each page to the print log as it arrives, so if the import fails or is stopped, the pages already read are kept. It pauses briefly between pages, so a few thousand prints take a minute or two. The import runs on the server, so it keeps going if you close the page. **Stop** ends it after the page being read. Only one runs at a time.
+
+- Prints already in the log are kept. Running it again adds only what's new.
+- **Recalculate all-time usage afterwards** (ticked by default) runs **Recalculate total** once it ends. Old prints are charged to members only for days whose reservations are saved, so [import the reservations](#importing-reservations) for the same days too, before or after.
+- It stops at `BAMBU_HISTORY_MAX_PAGES` pages (default 400, so 20,000 prints) and says so. Raise it if the account has more prints than that.
+- The print log's observed time then starts at the oldest print read, so older days no longer show "No Bambu print data".
 
 ## Limitations
 
@@ -370,6 +385,7 @@ src/reservations.js Saved agenda days (data/reservations.json)
 src/usagelog.js    Saved per-print usage results (data/usage.json)
 src/assignments.js Prints with no reservation that staff assigned to a member (data/assignments.json)
 src/importer.js    The admin page's bulk reservation import, run in the background
+src/bambuhistory.js The admin page's Bambu print history import, run in the background
 src/files.js       Atomic, owner-only JSON file saving
 src/demo.js        Demo data in the real upstream formats
 public/            The pages: waterfall (index.html), guest view (guest.html), filament usage (usage.html), admin (admin.html), sign-in (login.html) and your account (account.html), plus live.js for live updates and the account menu; no build step

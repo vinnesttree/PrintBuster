@@ -377,32 +377,52 @@ export class BambuClient {
     return Array.isArray(json.devices) ? json.devices : [];
   }
 
-  // Tasks come back newest first. Page backwards until we pass `sinceMs`.
-  async getTasks({ sinceMs }) {
-    const { taskPageSize: limit, maxTaskPages } = this.cfg;
+  // The account's print history, newest first, paged backwards until a page
+  // reaches `sinceMs` or the history ends. Bambu keeps far more than recent
+  // prints (the list Bambu Studio's print history shows). It is paged with
+  // `offset`, as Bambu Studio does; an `after` cursor, which /my/messages
+  // takes, appears to be ignored here and only ever returned the first page.
+  // `onPage` is awaited after each page with { hits, tasks, total }; returning
+  // false stops early. `complete` says whether everything back to `sinceMs`
+  // was read.
+  async getTasks({ sinceMs, maxPages = this.cfg.maxTaskPages, onPage } = {}) {
+    const limit = this.cfg.taskPageSize;
     const seen = new Set();
     const tasks = [];
-    let after;
+    let offset = 0;
+    let total = null;
     let complete = false;
-    for (let page = 0; page < maxTaskPages; page++) {
-      const json = await this.apiGet('/v1/user-service/my/tasks', after ? { limit, after } : { limit });
+    for (let page = 0; page < maxPages; page++) {
+      const json = await this.apiGet('/v1/user-service/my/tasks', { limit, offset });
       const hits = Array.isArray(json.hits) ? json.hits : Array.isArray(json.tasks) ? json.tasks : [];
-      let fresh = 0;
+      if (Number.isFinite(json.total)) total = json.total;
+      if (!hits.length) {
+        complete = true;
+        break;
+      }
+      // Prints started while paging push older ones to the next page, so a
+      // page can repeat a few; those are skipped.
+      const fresh = [];
       for (const t of hits) {
         if (seen.has(String(t.id))) continue;
         seen.add(String(t.id));
         tasks.push(t);
-        fresh++;
+        fresh.push(t);
       }
+      // A page with nothing new means the server did not move on. Stop
+      // rather than read it again, without claiming the rest was read.
+      if (!fresh.length) break;
+      const stop = (await onPage?.({ hits: fresh, tasks: tasks.length, total })) === false;
       // Trust `total` when present: the server may cap the page size below `limit`.
-      const lastPage = Number.isFinite(json.total) ? seen.size >= json.total : hits.length < limit;
+      const lastPage = Number.isFinite(json.total) ? offset + hits.length >= json.total : hits.length < limit;
       const oldest = Math.min(...hits.map((t) => Date.parse(t.startTime)).filter(Number.isFinite));
-      if (!fresh || lastPage || oldest < sinceMs) {
+      if (lastPage || oldest < sinceMs) {
         complete = true;
         break;
       }
-      after = hits[hits.length - 1].id;
+      if (stop) break;
+      offset += hits.length;
     }
-    return { tasks, complete };
+    return { tasks, complete, total };
   }
 }

@@ -240,7 +240,50 @@ describe('BambuClient', () => {
     // Newest first, two per page; the second page reaches Oct 23, so it stops.
     assert.deepEqual(got.map((t) => t.id), [6, 5, 4, 3]);
     assert.equal(complete, true);
-    assert.deepEqual(up.calls.map((x) => new URL(x.url).search), ['?limit=2', '?limit=2&after=5']);
+    assert.deepEqual(up.calls.map((x) => new URL(x.url).search), ['?limit=2&offset=0', '?limit=2&offset=2']);
+  });
+
+  it('reads the whole history, months back, when asked for everything', async () => {
+    // Like a busy shop: far more prints than one page, over several months.
+    const tasks = Array.from({ length: 23 }, (_, i) => task(i + 1, 'DEV1',
+      new Date(Date.parse('2026-06-01T10:00:00Z') + i * 6 * 86400000).toISOString().slice(0, 16),
+      new Date(Date.parse('2026-06-01T11:00:00Z') + i * 6 * 86400000).toISOString().slice(0, 16)));
+    const up = createMockUpstream({ bambu: { tasks } });
+    const c = client(up, { accessToken: 'env-token', taskPageSize: 5, maxTaskPages: 100 });
+    const pages = [];
+    const { tasks: got, complete, total } = await c.getTasks({ sinceMs: 0, onPage: (p) => { pages.push(p.hits.length); } });
+    assert.equal(got.length, 23);
+    assert.deepEqual(got.map((t) => t.id), tasks.map((t) => t.id).reverse());
+    assert.equal(complete, true);
+    assert.equal(total, 23);
+    assert.deepEqual(pages, [5, 5, 5, 5, 3]);
+    assert.deepEqual(up.calls.map((x) => new URL(x.url).searchParams.get('offset')), ['0', '5', '10', '15', '20']);
+  });
+
+  it('skips prints repeated when new ones start while paging', async () => {
+    const tasks = [1, 2, 3, 4, 5].map((n) => task(n, 'DEV1', `2026-10-${20 + n}T10:00`, `2026-10-${20 + n}T11:00`));
+    let calls = 0;
+    // Between the two pages a new print starts, pushing #3 onto page two.
+    const fetch = async (input) => {
+      const offset = Number(new URL(input).searchParams.get('offset'));
+      const now = calls++ === 0 ? tasks : [task(6, 'DEV1', '2026-10-26T12:00', '2026-10-26T13:00'), ...tasks];
+      const sorted = [...now].sort((a, b) => Date.parse(b.startTime) - Date.parse(a.startTime));
+      return Response.json({ total: sorted.length, hits: sorted.slice(offset, offset + 3) });
+    };
+    const c = new BambuClient({ ...cfg, accessToken: 'env-token', taskPageSize: 3 }, { fetch });
+    const { tasks: got, complete } = await c.getTasks({ sinceMs: 0 });
+    assert.deepEqual(got.map((t) => t.id), [5, 4, 3, 2, 1]);
+    assert.equal(complete, true);
+  });
+
+  it('stops when onPage returns false, without claiming the rest was read', async () => {
+    const tasks = [1, 2, 3, 4, 5, 6].map((n) => task(n, 'DEV1', `2026-10-${20 + n}T10:00`, `2026-10-${20 + n}T11:00`));
+    const up = createMockUpstream({ bambu: { tasks } });
+    const c = client(up, { accessToken: 'env-token' });
+    const { tasks: got, complete } = await c.getTasks({ sinceMs: 0, onPage: () => false });
+    assert.deepEqual(got.map((t) => t.id), [6, 5]);
+    assert.equal(complete, false);
+    assert.equal(up.calls.length, 1);
   });
 
   it('keeps paging when the server returns smaller pages than requested', async () => {
@@ -260,11 +303,12 @@ describe('BambuClient', () => {
     assert.equal(complete, false);
   });
 
-  it('stops if the server ignores the cursor', async () => {
+  it('stops if the server ignores the offset, and says the history is incomplete', async () => {
     const tasks = [1, 2, 3].map((n) => task(n, 'DEV1', `2026-10-${20 + n}T10:00`, `2026-10-${20 + n}T11:00`));
     const fetch = async () => Response.json({ hits: tasks.slice(0, 2) });
     const c = new BambuClient({ ...cfg, accessToken: 'env-token' }, { fetch });
-    const { tasks: got } = await c.getTasks({ sinceMs: 0 });
+    const { tasks: got, complete } = await c.getTasks({ sinceMs: 0 });
     assert.equal(got.length, 2);
+    assert.equal(complete, false);
   });
 });

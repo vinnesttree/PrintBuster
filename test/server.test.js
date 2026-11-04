@@ -360,6 +360,32 @@ describe('print log', () => {
     ]);
   });
 
+  it('reads back to the last collection after PrintBuster was off for days', async () => {
+    const { up, env } = await setup();
+    env.BAMBU_TASK_PAGE_SIZE = '1';
+    let clock = at('2026-10-26T21:30:00-05:00');
+    const first = await createApp(loadConfig(env, []), { fetch: up.fetch, now: () => clock });
+    await first.locals.service.collect();
+
+    // Off from Oct 26, 9:30 PM to Oct 30, noon. Bambu still has the prints
+    // made meanwhile, including one more than two days before the restart.
+    up.bambu.tasks.push(
+      task(4, 'D-ADA', '2026-10-27T08:00', '2026-10-27T09:00'),
+      task(5, 'D-ADA', '2026-10-28T08:00', '2026-10-28T09:00'),
+      task(6, 'D-ADA', '2026-10-29T14:00', '2026-10-29T15:00'),
+      task(7, 'D-ADA', '2026-10-30T09:00', '2026-10-30T10:00'),
+    );
+    clock = at('2026-10-30T12:00:00-05:00');
+    const app = await createApp(loadConfig(env, []), { fetch: up.fetch, now: () => clock }); // a fresh process
+    await app.locals.service.collect();
+    const log = app.locals.service.printLog;
+    assert.deepEqual(log.query(0, Infinity).map((r) => r.id).sort(), ['1', '2', '3', '4', '5', '6', '7']);
+    // One observed span, with no gap while PrintBuster was off.
+    assert.deepEqual(log.coverage().map(([s, e]) => [new Date(s).toISOString(), new Date(e).toISOString()]),
+      [['2026-10-26T14:10:00.000Z', '2026-10-30T17:00:00.000Z']]);
+    assert.equal(app.locals.service.collected.bambu.complete, true);
+  });
+
   it('counts a fresh fetch as observing the present, so today has no trailing gap', async () => {
     const { up, env } = await setup();
     let clock = at('2026-10-26T21:30:00-05:00');

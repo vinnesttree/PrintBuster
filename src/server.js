@@ -12,6 +12,7 @@ import {
 } from './auth.js';
 import { Collector } from './collector.js';
 import { ReservationImport } from './importer.js';
+import { BambuHistoryImport } from './bambuhistory.js';
 import { describeError, SourceError } from './errors.js';
 import { guestComparison, guestConfig } from './guest.js';
 import { PrintLog } from './printlog.js';
@@ -100,6 +101,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   });
   service.attachCollector(collector);
   const importer = new ReservationImport(service, { now });
+  const bambuHistory = new BambuHistoryImport(service, { now });
 
   const app = express();
   app.disable('x-powered-by');
@@ -108,6 +110,7 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
   app.locals.collector = collector;
   app.locals.kuma = kuma;
   app.locals.importer = importer;
+  app.locals.bambuHistory = bambuHistory;
   app.locals.accounts = accounts;
   app.locals.sessions = sessions;
   // Ends every open event stream, so the server can close.
@@ -399,6 +402,19 @@ export async function createApp(config, { fetch = globalThis.fetch, now = () => 
 
   app.post('/api/admin/import/stop', (req, res) => res.json(importer.stop()));
 
+  // Reads Bambu's whole print history into the print log, in the
+  // background; the admin page polls its progress.
+  app.get('/api/admin/bambu-history', (req, res) => res.json(bambuHistory.status()));
+
+  app.post('/api/admin/bambu-history', (req, res) => {
+    if (bambuHistory.busy) {
+      return res.status(409).json({ error: { message: 'A Bambu history import is already running.', code: 'import_running', hint: 'Wait for it to finish, or stop it.' } });
+    }
+    res.status(202).json(bambuHistory.start({ recalculateTotal: req.body?.recalculateTotal === true }));
+  });
+
+  app.post('/api/admin/bambu-history/stop', (req, res) => res.json(bambuHistory.stop()));
+
   app.post('/api/bambu/code', async (req, res) => {
     if (!bambu.submitCode) return res.status(400).json({ error: { message: 'Not available in demo mode.' } });
     await bambu.submitCode(req.body?.code);
@@ -535,11 +551,13 @@ async function main() {
   const shutdown = () => {
     app.locals.collector.stop();
     app.locals.importer.stop();
+    app.locals.bambuHistory.stop();
     app.locals.closeStreams();
     // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
       await app.locals.service.printLog?.queue;
       await app.locals.importer.running;
+      await app.locals.bambuHistory.running;
       await app.locals.service.reservationArchive?.queue;
       await app.locals.service.usageLog?.queue;
       await app.locals.service.assignments?.queue;

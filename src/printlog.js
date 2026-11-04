@@ -2,17 +2,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { writeAtomic } from './files.js';
 
-// Bambu's cloud only keeps about a day of print history, so every task we see
-// is kept here. One JSON object per line; a task gets a new line only when it
-// first appears or changes (for example when it finishes), and the last line
-// for an id wins. A separate small file records which time spans were
-// actually observed, so gaps (app offline, history already gone) are known.
+// Every Bambu task PrintBuster reads is kept here, so pages never ask Bambu
+// themselves and prints stay available if Bambu is unreachable. One JSON
+// object per line; a task gets a new line only when it first appears or
+// changes (for example when it finishes), and the last line for an id wins. A separate small file records which time spans were
+// actually observed, so gaps (before the log began, a read cut short) are known.
 
 // The task fields needed to redraw and re-check a print later.
 const FIELDS = ['startTime', 'endTime', 'status', 'deviceId', 'deviceName', 'deviceModel', 'title', 'designTitle', 'plateName', 'plateIndex', 'costTime', 'weight', 'length', 'amsDetailMapping'];
 
 // Two successful fetches this close together are assumed to have seen
-// everything in between. Must stay well below Bambu's history window.
+// everything in between. Must stay below how far back each collection reads.
 export const BRIDGE_MS = 6 * 3600 * 1000;
 
 const iso = (ms) => new Date(ms).toISOString();

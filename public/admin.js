@@ -2,7 +2,8 @@
 
 const $ = (sel) => document.querySelector(sel);
 // `status` is the import's; `admin` is the collection, Bambu and usage.
-const state = { config: null, status: null, admin: null, timer: null, accounts: { accounts: [], me: null } };
+// `history` is the Bambu history import's.
+const state = { config: null, status: null, admin: null, history: null, timer: null, historyTimer: null, accounts: { accounts: [], me: null } };
 // How often the page checks on an import while one is running.
 const POLL_MS = 1000;
 
@@ -29,7 +30,10 @@ const fmtDay = (iso) => new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', mont
 const fmtDateTime = (iso) => new Intl.DateTimeFormat('en-US', {
   timeZone: state.config.timezone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
 }).format(new Date(iso));
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const plural = (n, word) => `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+const fmtDate = (iso) => new Intl.DateTimeFormat('en-US', {
+  timeZone: state.config.timezone, month: 'short', day: 'numeric', year: 'numeric',
+}).format(new Date(iso));
 
 function shift(iso, days) {
   const d = new Date(`${iso}T12:00:00Z`);
@@ -117,7 +121,7 @@ function renderJob() {
 
   const done = job.read + job.failed.length;
   const share = job.toRead ? done / job.toRead : 1;
-  const bar = $('.progress-bar');
+  const bar = $('#progress .progress-bar');
   bar.setAttribute('aria-valuenow', String(Math.round(share * 100)));
   bar.firstElementChild.style.width = `${share * 100}%`;
 
@@ -243,6 +247,91 @@ async function bambuRestart() {
     return tfa ? 'Started over. Enter the current code from your authenticator app.' : 'A new code is on its way.';
   });
   await loadAdmin();
+}
+
+// ---------------------------------------------------------------- Bambu history
+
+const HISTORY_STOPPED = {
+  stopped: 'Stopped',
+  page_limit: 'Stopped at the page limit (BAMBU_HISTORY_MAX_PAGES); older prints were not read',
+  incomplete: 'Stopped: Bambu sent the same page again, so older prints could not be read',
+};
+
+function renderHistory() {
+  const h = state.history;
+  const log = h.printLog;
+  $('#history-log').textContent = state.config.demo ? 'Demo mode keeps no print log.'
+    : !log || !log.prints ? 'The print log is empty.'
+      : `${plural(log.prints, 'print')} in the print log${log.since ? `, observed since ${fmtDate(log.since)}` : ''}.`;
+  const job = h.job;
+  const running = job?.state === 'running';
+  $('#history-start').disabled = running || state.config.demo;
+  $('#history-stop').hidden = !running;
+  $('#history-stop').disabled = Boolean(job?.stopReason);
+  $('#history-progress').hidden = !job;
+  if (!job) return;
+
+  const share = job.state === 'done' ? 1 : job.total ? Math.min(1, job.prints / job.total) : 0;
+  const bar = $('#history-progress .progress-bar');
+  bar.setAttribute('aria-valuenow', String(Math.round(share * 100)));
+  bar.firstElementChild.style.width = `${share * 100}%`;
+
+  let status;
+  if (running) status = job.stopReason ? 'Stopping after the page being read…' : `Importing… started ${fmtDateTime(job.startedAt)}`;
+  else if (job.state === 'failed') status = `Failed ${fmtDateTime(job.finishedAt)}: ${errorText(job.error)}`;
+  else if (job.state === 'stopped') status = `${HISTORY_STOPPED[job.stopReason] || 'Stopped'} (${fmtDateTime(job.finishedAt)}).`;
+  else status = `Finished ${fmtDateTime(job.finishedAt)}.`;
+  const summary = [
+    `Read ${job.total !== null && job.state !== 'done' ? `${job.prints.toLocaleString('en-US')} of ${plural(job.total, 'print')}` : plural(job.prints, 'print')}`
+      + (job.oldest ? `, back to ${fmtDate(job.oldest)}` : ''),
+    `${job.added.toLocaleString('en-US')} new to the print log`,
+  ].join(' · ');
+  const recalc = job.totalRecalculation;
+  $('#history-text').replaceChildren(...[
+    el('strong', { text: status }), ' ', summary, '.',
+    recalc ? el('br') : null,
+    recalc?.ok ? `All-time usage recalculated: ${plural(recalc.prints, 'print')} saved.` : null,
+    recalc && !recalc.ok ? `All-time usage could not be recalculated: ${errorText(recalc.error)}` : null,
+  ].filter((c) => c !== null));
+}
+
+// Checks on the history import every second while it runs.
+function scheduleHistory() {
+  clearTimeout(state.historyTimer);
+  if (state.history?.job?.state === 'running') state.historyTimer = setTimeout(pollHistory, POLL_MS);
+}
+
+async function pollHistory() {
+  try {
+    state.history = await api('/api/admin/bambu-history');
+    renderHistory();
+  } catch (err) {
+    $('#history-msg').textContent = `Could not check the Bambu history import: ${err.message}`;
+  }
+  scheduleHistory();
+}
+
+async function startHistory() {
+  $('#history-start').disabled = true;
+  $('#history-msg').textContent = '';
+  try {
+    state.history = await api('/api/admin/bambu-history', { recalculateTotal: $('#history-recalc').checked });
+    renderHistory();
+  } catch (err) {
+    $('#history-start').disabled = false;
+    $('#history-msg').textContent = err.message;
+  }
+  scheduleHistory();
+}
+
+async function stopHistory() {
+  $('#history-stop').disabled = true;
+  try {
+    state.history = await api('/api/admin/bambu-history/stop', {});
+    renderHistory();
+  } catch (err) {
+    $('#history-msg').textContent = err.message;
+  }
 }
 
 // ---------------------------------------------------------------- accounts
@@ -424,9 +513,11 @@ async function init() {
   $('#bambu-form').addEventListener('submit', bambuCode);
   $('#bambu-restart').addEventListener('click', bambuRestart);
   $('#account-form').addEventListener('submit', addAccount);
+  $('#history-start').addEventListener('click', startHistory);
+  $('#history-stop').addEventListener('click', stopHistory);
   // Shows each collection's result as the server finishes it.
   liveUpdates(loadAdmin);
-  await Promise.all([loadAdmin(), poll(), loadAccounts()]);
+  await Promise.all([loadAdmin(), poll(), pollHistory(), loadAccounts()]);
 }
 
 init().catch((err) => {

@@ -127,7 +127,7 @@ function renderBanners() {
     const shown = d.printGaps.slice(0, 3).map((g) => `${fmtDateTime(g.start)} – ${fmtDateTime(g.end)}`);
     const more = d.printGaps.length > 3 ? ` and ${d.printGaps.length - 3} more` : '';
     list.push(banner('icon-partial', '!', 'Part of this range has no Bambu print data',
-      `Bambu only keeps about a day of history, so usage relies on PrintBuster's print log${since ? `, which starts ${fmtDateTime(since)}` : ''}. `
+      `Usage comes from PrintBuster's print log${since ? `, which starts ${fmtDateTime(since)}` : ''}. Import Bambu history on the Admin page to add older prints. `
       + `Prints in these times are missing: ${shown.join('; ')}${more}.`));
   }
   if (d.totals?.printsWithoutWeight) {
