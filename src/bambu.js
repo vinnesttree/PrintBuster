@@ -90,7 +90,9 @@ export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {
 
   return {
     id: `bb-${task.id}`,
-    title: task.title || task.designTitle || 'Untitled print',
+    // The model's name (its MakerWorld design title) when Bambu has one, else
+    // the project name the print was sent with.
+    title: String(task.designTitle ?? '').trim() || String(task.title ?? '').trim() || 'Untitled print',
     plate: task.plateName || (task.plateIndex ? `Plate ${task.plateIndex}` : ''),
     deviceId: task.deviceId || '',
     deviceName: deviceNames.get(task.deviceId) || task.deviceName || task.deviceId || 'Unknown printer',
