@@ -282,6 +282,13 @@ input[type="date"], input[type="text"], input[type="password"], select {
 .print-chip.is-cancelled:not(.is-heavy):not(.is-long), .key-chip.is-cancelled {
   box-shadow: none; outline: 1px dashed var(--muted); outline-offset: -1px;
 }
+/* A paused print (from the printers' live feed): hatched bar, outlined tag. */
+.print.is-paused {
+  background-image: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--surface) 55%, transparent) 4px 7px);
+}
+.print-chip.is-paused:not(.is-heavy):not(.is-long), .key-chip.is-paused {
+  color: var(--text); box-shadow: inset 0 0 0 1.5px var(--text-2);
+}
 .print-chip.is-heavy::before, .key-chip.is-heavy::before { content: "\25B2\00A0"; font-size: 8px; vertical-align: 1px; }
 .key-multi { width: 24px; height: 5px; border-radius: 2px; }
 .tt-row.tt-warn { color: var(--text); display: flex; align-items: center; gap: 5px; margin-top: 2px; }

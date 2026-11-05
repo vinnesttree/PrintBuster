@@ -88,9 +88,13 @@ const isAuthError = (err) => err?.code === 4 || err?.code === 5 || err?.code ===
 export class LivePrintWatcher {
   // `store` is a PrintLog without coverage. `devices()` returns the printers
   // from the latest Bambu collection. `connect` is mqtt.connect (tests pass
-  // a stand-in).
-  constructor(cfg, { bambu, store, devices = () => [], connect = mqtt.connect, now = () => Date.now() }) {
+  // a stand-in). `onChange` runs when a printer starts, finishes, pauses or
+  // resumes a print, so open pages can redraw at once.
+  constructor(cfg, {
+    bambu, store, devices = () => [], connect = mqtt.connect, now = () => Date.now(), onChange = () => {},
+  }) {
     this.cfg = cfg;
+    this.onChange = onChange;
     this.bambu = bambu;
     this.store = store;
     this.devices = devices;
@@ -143,6 +147,36 @@ export class LivePrintWatcher {
       lastMessageAt: this.lastMessageAt ? iso(this.lastMessageAt) : null,
       error: this.error,
     };
+  }
+
+  // What each printer is doing now, by serial, for printers the feed shows
+  // printing (cloud prints included): its state, whether it is paused and
+  // since when (null when it was already paused as the feed connected), the
+  // printer's own estimate of minutes left, and the finish that gives. While
+  // paused, the finish is the time left counted from now.
+  printerStates() {
+    const out = new Map();
+    if (!this.connected) return out;
+    const now = this.now();
+    for (const [serial, p] of this.printers) {
+      const s = p.live;
+      // Only what was reported since the feed last connected.
+      if (!s || s.epoch !== this.epoch || !ACTIVE.has(s.state)) continue;
+      let finishAt = null;
+      if (s.remainingMinutes != null && (s.state === 'RUNNING' || s.state === 'PAUSE' || s.remainingMinutes > 0)) {
+        const left = s.remainingMinutes * 60_000;
+        finishAt = s.paused ? now + left : Math.max(now, s.remainingAt + left);
+      }
+      out.set(serial, {
+        state: s.state,
+        paused: s.paused,
+        pausedSince: s.pausedSince != null ? iso(s.pausedSince) : null,
+        remainingMinutes: s.remainingMinutes,
+        finishAt,
+        printType: s.printType,
+      });
+    }
+    return out;
   }
 
   // Ids of the prints the feed currently shows printing.
@@ -304,6 +338,10 @@ export class LivePrintWatcher {
     if (json?.event?.event === 'client.disconnected') {
       p.job = null;
       p.sawIdle = false;
+      if (p.live) {
+        p.live = null;
+        this.onChange();
+      }
       return null;
     }
     const delta = json?.print;
@@ -312,6 +350,7 @@ export class LivePrintWatcher {
     const r = p.report;
     const state = String(r.gcode_state ?? '').toUpperCase();
     const now = this.now();
+    this.track(p, delta, state, now);
     if (ACTIVE.has(state)) return this.active(serial, p, r, now);
     if (state in ENDED) return this.ended(serial, p, r, now, ENDED[state]);
     if (state) {
@@ -320,6 +359,30 @@ export class LivePrintWatcher {
       p.sawIdle = true;
     }
     return null;
+  }
+
+  // Keeps what the printer is doing now (see printerStates), for every
+  // print, cloud ones included.
+  track(p, delta, state, now) {
+    const r = p.report;
+    const prev = p.live;
+    const sameRun = Boolean(prev) && prev.epoch === this.epoch;
+    const paused = state === 'PAUSE';
+    // Seen pausing: now. Already paused when first seen: unknown.
+    let pausedSince = null;
+    if (paused && sameRun) pausedSince = prev.paused ? prev.pausedSince : (prev.state ? now : null);
+    const remaining = r.mc_remaining_time == null || r.mc_remaining_time === '' ? NaN : Number(r.mc_remaining_time);
+    p.live = {
+      epoch: this.epoch,
+      state,
+      paused,
+      pausedSince,
+      remainingMinutes: Number.isFinite(remaining) && remaining >= 0 ? remaining : null,
+      // When the time left was reported (the P1 series repeats it only when it changes).
+      remainingAt: 'mc_remaining_time' in delta || !prev ? now : prev.remainingAt,
+      printType: String(r.print_type ?? '').toLowerCase() || null,
+    };
+    if (!sameRun || prev.state !== state) this.onChange();
   }
 
   // Cloud prints are in Bambu's print history already.
@@ -411,6 +474,8 @@ export class LivePrintWatcher {
     const devices = this.devices() || [];
     const device = devices.find((d) => String(d?.dev_id) === job.deviceId);
     const task = { ...job, deviceModel: job.deviceModel || device?.dev_product_name || undefined };
-    return this.store.record({ tasks: [task], devices, fetchedAt: now });
+    const written = this.store.record({ tasks: [task], devices, fetchedAt: now });
+    this.onChange();
+    return written;
   }
 }

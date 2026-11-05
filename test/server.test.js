@@ -939,6 +939,65 @@ describe('server-side collection and live updates', () => {
     assert.fail(`viewers never reached ${n}`);
   }
 
+  it('shows a paused print, cloud or not, and times a live print by the printer', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-pause-'));
+    const up = createMockUpstream({
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }, { dev_id: 'D-OHM', name: 'Ohm', dev_product_name: 'P1S' }],
+        // A cloud print still running: Bambu reports its end as its start.
+        tasks: [task(5, 'D-ADA', '2026-10-27T17:30', null, { status: 1, costTime: 7200 })],
+      },
+    });
+    let clock = Date.parse('2026-10-27T22:45:00Z');
+    const clients = [];
+    const mqttConnect = (url, opts) => {
+      const c = Object.assign(new EventEmitter(), { opts, subscribe(t, o, cb) { cb?.(null); }, publish() {}, end() {} });
+      clients.push(c);
+      return c;
+    };
+    const api = await start({
+      DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
+      BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'), GUEST_VIEW: 'true',
+    }, { fetch: up.fetch, now: () => clock, mqttConnect });
+    await api.app.locals.live.start();
+    const broker = clients[0];
+    broker.emit('connect');
+    const report = async (serial, print) => {
+      broker.emit('message', `device/${serial}/report`, Buffer.from(JSON.stringify({ print })));
+      await api.app.locals.service.liveLog.queue;
+    };
+    await report('D-ADA', { gcode_state: 'RUNNING', print_type: 'cloud', subtask_name: 'Job 5', mc_remaining_time: 100 });
+    await report('D-OHM', { gcode_state: 'IDLE' });
+    await report('D-OHM', { gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'SD job', mc_remaining_time: 50 });
+
+    const page = new AbortController();
+    const next = eventReader(await fetch(`${api.base}/api/events`, { headers: { Cookie: api.cookie }, signal: page.signal }));
+    assert.equal((await next()).event, 'hello');
+    await viewersSoon(api, 1);
+
+    // Pausing is announced to open pages without waiting for a collection.
+    clock += 60_000;
+    const pausedAt = new Date(clock).toISOString();
+    await report('D-ADA', { gcode_state: 'PAUSE' });
+    assert.equal((await next()).event, 'update');
+    page.abort();
+
+    const data = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const cloud = data.prints.find((p) => p.id === 'bb-5');
+    assert.equal(cloud.status, 'running');
+    assert.equal(cloud.paused, true);
+    assert.equal(cloud.pausedSince, pausedAt);
+    const sd = data.prints.find((p) => p.source === 'live');
+    assert.equal(sd.paused, false);
+    assert.equal(sd.remainingMinutes, 50);
+    // Reported at 22:45 with 50 minutes left.
+    assert.equal(sd.end, '2026-10-27T23:35:00.000Z');
+
+    const guest = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
+    assert.equal(guest.prints.find((p) => p.status === 'running' && p.paused).pausedSince, pausedAt);
+    api.app.locals.live.stop();
+  });
+
   it('counts open pages and tells them when new data is in', async () => {
     let clock = NOW;
     const api = await start({ DEMO_MODE: 'true', POLL_ACTIVE_MINUTES: '2', POLL_IDLE_MINUTES: '15' }, { now: () => clock });

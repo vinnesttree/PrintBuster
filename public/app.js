@@ -74,6 +74,8 @@ function statusChip(match) {
 function bambuStatusText(p) {
   if (p.finishUnknown && p.status === 'failed') return 'Failed or cancelled, end time not recorded';
   if (p.finishUnknown) return 'Finish not recorded (was printing when last checked)';
+  // From the printers' live feed, for cloud prints too.
+  if (p.paused) return `Paused${p.pausedSince ? ` since ${fmtWhen(ms(p.pausedSince))}` : ''}`;
   if (p.status === 'running') {
     const when = fmtWhen(ms(p.end));
     return p.overdue ? `Printing (was due ${when})` : `Printing, due ${when}`;
@@ -165,10 +167,13 @@ const gramsLabel = (p, g) => `${p.cancelledUse ? (p.cancelledUse.upperBound ? '�
 // the heavy (most noticeable) tag.
 function printChip(p) {
   const parts = [];
+  if (p.paused) parts.push('Paused');
   if (usedGrams(p) != null) parts.push(gramsLabel(p, usedGrams(p)));
   if (p.overTime) parts.push(`${fmtHours(state.data.flagDurationHours)}+`);
   if (!parts.length) return null;
-  return { text: parts.join(' · '), heavy: Boolean(p.overWeight), long: Boolean(p.overTime), cancelled: Boolean(p.cancelledUse) };
+  return {
+    text: parts.join(' · '), heavy: Boolean(p.overWeight), long: Boolean(p.overTime), cancelled: Boolean(p.cancelledUse), paused: Boolean(p.paused),
+  };
 }
 
 const amountText = (g, m) => [g != null ? `${g} g` : null, m != null ? `${m} m` : null].filter(Boolean).join(' · ');
@@ -236,6 +241,9 @@ function printTooltip(p, row) {
     ttRow('Printer', `${p.deviceName}${row.unmapped ? ' (not matched to a Design Hub model)' : ''}`),
     ttRow('Time', `${fmtWhen(ms(p.start))} → ${fmtWhen(ms(p.end))}${p.estimated ? ' (est.)' : ''}`),
     ttRow('Duration', fmtDuration(ms(p.end) - ms(p.start))),
+    p.remainingMinutes != null
+      ? ttRow('Time left', `${fmtDuration(p.remainingMinutes * 60000)} (printer\u2019s estimate${p.paused ? ', once it resumes' : ''})`)
+      : null,
     ...materialRows(p),
     p.overWeight ? ttWarn(`Over ${state.data.flagWeightGrams} g of filament`) : null,
     p.overTime ? ttWarn(`Runs over ${fmtHours(state.data.flagDurationHours)}`) : null,
@@ -384,7 +392,7 @@ function renderChart() {
       const widthMs = Math.max(e - s, 1);
       const multi = p.multiColor || p.multiMaterial;
       const node = el('div', {
-        className: ['print', `is-${p.match}`, multi && 'is-multi', p.s < dayStart && 'clip-start', p.e > dayEnd && 'clip-end'].filter(Boolean).join(' '),
+        className: ['print', `is-${p.match}`, multi && 'is-multi', p.paused && 'is-paused', p.s < dayStart && 'clip-start', p.e > dayEnd && 'clip-end'].filter(Boolean).join(' '),
         style: { left: `${left}%`, width: `${width}%`, top: `${lane * LANE_H + PRINT_TOP}px` },
         tabindex: '0',
         role: 'img',
@@ -392,6 +400,7 @@ function renderChart() {
           + (usedGrams(p) == null ? ''
             : p.cancelledUse ? ` Cancelled; ${p.cancelledUse.upperBound ? 'up to' : 'about'} ${fmtGrams(usedGrams(p))} of filament used (estimate).`
               : ` ${fmtGrams(usedGrams(p))} of filament (estimate).`)
+          + (p.paused ? ' Paused.' : '')
           + (p.large ? ' Large print.' : '')
           + (p.multiMaterial ? ` Multi-material: ${p.materialTypes.join(', ')}.` : p.multiColor ? ' Multi-colour.' : ''),
       });
@@ -427,7 +436,7 @@ function renderChart() {
         const place = room >= chipW + 9 ? 'after' : barPx >= chipW + 8 ? 'inside' : null;
         if (place) {
           node.append(el('span', {
-            className: ['print-chip', chip.heavy && 'is-heavy', chip.long && 'is-long', chip.cancelled && 'is-cancelled', `is-${place}`].filter(Boolean).join(' '),
+            className: ['print-chip', chip.heavy && 'is-heavy', chip.long && 'is-long', chip.cancelled && 'is-cancelled', chip.paused && 'is-paused', `is-${place}`].filter(Boolean).join(' '),
             'aria-hidden': 'true',
             text: chip.text,
           }));

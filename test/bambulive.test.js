@@ -40,7 +40,7 @@ function fakeMqtt() {
   return { connect, clients, get last() { return clients.at(-1); } };
 }
 
-async function setup({ token = TOKEN, devices = DEVICES, pushall = true, dir } = {}) {
+async function setup({ token = TOKEN, devices = DEVICES, pushall = true, dir, onChange } = {}) {
   dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'pb-livefeed-'));
   const store = new PrintLog(path.join(dir, 'live-prints.jsonl'), { coverage: false, fields: LIVE_FIELDS });
   await store.load();
@@ -48,7 +48,7 @@ async function setup({ token = TOKEN, devices = DEVICES, pushall = true, dir } =
   const clock = { now: NOW };
   const bambu = { token, apiGet: async () => ({ uid: 777 }) };
   const watcher = new LivePrintWatcher({ region: 'global', pushall }, {
-    bambu, store, devices: () => devices, connect: mq.connect, now: () => clock.now,
+    bambu, store, devices: () => devices, connect: mq.connect, now: () => clock.now, onChange,
   });
   // Delivers a report from a printer, then waits for the print log write.
   const report = async (serial, print) => {
@@ -350,6 +350,85 @@ describe('LivePrintWatcher', () => {
   });
 });
 
+describe('printer state from the live feed', () => {
+  it('reports a pause, from when the feed saw it, and the printer\u2019s time left', async () => {
+    const t = await connected();
+    await t.report('SN-ADA', { gcode_state: 'RUNNING', print_type: 'cloud', subtask_name: 'Cloud job', mc_remaining_time: 40 });
+    let st = t.watcher.printerStates().get('SN-ADA');
+    assert.equal(st.paused, false);
+    assert.equal(st.printType, 'cloud');
+    assert.equal(st.remainingMinutes, 40);
+    assert.equal(st.finishAt, NOW + 40 * MIN);
+
+    // The time left counts from when it was reported.
+    t.clock.now += 5 * MIN;
+    assert.equal(t.watcher.printerStates().get('SN-ADA').finishAt, NOW + 40 * MIN);
+
+    const pausedAt = t.clock.now;
+    await t.report('SN-ADA', { gcode_state: 'PAUSE' });
+    st = t.watcher.printerStates().get('SN-ADA');
+    assert.equal(st.paused, true);
+    assert.equal(st.pausedSince, new Date(pausedAt).toISOString());
+    // While paused, the finish moves out: the time left counts from now.
+    t.clock.now += 20 * MIN;
+    st = t.watcher.printerStates().get('SN-ADA');
+    assert.equal(st.finishAt, t.clock.now + 40 * MIN);
+    assert.equal(st.pausedSince, new Date(pausedAt).toISOString());
+
+    await t.report('SN-ADA', { gcode_state: 'RUNNING', mc_remaining_time: 40 });
+    st = t.watcher.printerStates().get('SN-ADA');
+    assert.equal(st.paused, false);
+    assert.equal(st.pausedSince, null);
+
+    await t.report('SN-ADA', { gcode_state: 'FINISH' });
+    assert.equal(t.watcher.printerStates().has('SN-ADA'), false);
+  });
+
+  it('does not know when a print paused that was already paused when it connected', async () => {
+    const t = await connected();
+    await t.report('SN-OHM', { gcode_state: 'PAUSE', print_type: 'local', subtask_name: 'Held', mc_remaining_time: 12 });
+    const st = t.watcher.printerStates().get('SN-OHM');
+    assert.equal(st.paused, true);
+    assert.equal(st.pausedSince, null);
+  });
+
+  it('reports nothing while disconnected, nor state from before it reconnected', async () => {
+    const t = await connected();
+    await t.report('SN-ADA', { gcode_state: 'PAUSE', print_type: 'cloud' });
+    t.mq.last.emit('close');
+    assert.equal(t.watcher.printerStates().size, 0);
+    t.mq.last.emit('connect');
+    assert.equal(t.watcher.printerStates().size, 0);
+    await t.report('SN-ADA', { mc_percent: 50 }); // a P1 delta: the state is still known
+    assert.equal(t.watcher.printerStates().get('SN-ADA').paused, true);
+    assert.equal(t.watcher.printerStates().get('SN-ADA').pausedSince, null);
+  });
+
+  it('forgets a printer that drops off the broker', async () => {
+    const t = await connected();
+    await t.report('SN-ADA', { gcode_state: 'PAUSE', print_type: 'cloud' });
+    t.mq.last.emit('message', 'device/SN-ADA/report', Buffer.from(JSON.stringify({ event: { event: 'client.disconnected' } })));
+    assert.equal(t.watcher.printerStates().size, 0);
+  });
+
+  it('says when a printer starts, pauses, resumes or finishes, not on every report', async () => {
+    let changes = 0;
+    const t = await connected({ onChange: () => { changes++; } });
+    await t.report('SN-ADA', { gcode_state: 'IDLE' });
+    const after = (n) => { const was = changes; return () => changes - was; };
+    let count = after();
+    await t.report('SN-ADA', { gcode_state: 'RUNNING', print_type: 'cloud', mc_remaining_time: 30 });
+    assert.equal(count(), 1);
+    count = after();
+    for (let i = 0; i < 5; i++) await t.report('SN-ADA', { mc_remaining_time: 29 - i, mc_percent: i });
+    assert.equal(count(), 0);
+    await t.report('SN-ADA', { gcode_state: 'PAUSE' });
+    await t.report('SN-ADA', { gcode_state: 'RUNNING' });
+    await t.report('SN-ADA', { gcode_state: 'FINISH' });
+    assert.equal(count(), 3);
+  });
+});
+
 describe('live prints in the comparison', () => {
   const live = (start, end, extra = {}) => ({
     id: 'bb-live', deviceId: 'SN-ADA', start: new Date(start).toISOString(), end: new Date(end).toISOString(), ...extra,
@@ -383,5 +462,33 @@ describe('live prints in the comparison', () => {
     assert.equal(prints[0].source, 'live');
     assert.equal(prints[0].deviceName, 'Ada');
     assert.equal(prints[0].weightGrams, null);
+  });
+
+  it('marks the print running on a paused printer, and times a live print by the printer', () => {
+    const at = (ms) => new Date(ms).toISOString();
+    const states = new Map([
+      ['SN-ADA', { state: 'PAUSE', paused: true, pausedSince: at(NOW - 10 * MIN), remainingMinutes: 30, finishAt: NOW + 30 * MIN, printType: 'cloud' }],
+      ['SN-OHM', { state: 'RUNNING', paused: false, pausedSince: null, remainingMinutes: 25, finishAt: NOW + 25 * MIN, printType: 'local' }],
+    ]);
+    const service = new CompareService({}, { designhub: null, bambu: null, live: { printerStates: () => states, activeIds: () => new Set() } });
+    const prints = [
+      { id: 'bb-1', deviceId: 'SN-ADA', status: 'finished', start: at(NOW - 5 * 3600_000), end: at(NOW - 4 * 3600_000) },
+      { id: 'bb-2', deviceId: 'SN-ADA', status: 'running', start: at(NOW - 3600_000), end: at(NOW + 3600_000), estimated: true },
+      { id: 'bb-live-x', source: 'live', deviceId: 'SN-OHM', status: 'running', start: at(NOW - 3600_000), end: at(NOW + 5 * MIN), estimated: true },
+    ];
+    const out = service.withPrinterState(prints, NOW);
+    assert.equal(out[0], prints[0], 'a finished print is left as it was');
+    // A cloud print: paused, and its end still Bambu's estimate.
+    assert.equal(out[1].paused, true);
+    assert.equal(out[1].pausedSince, at(NOW - 10 * MIN));
+    assert.equal(out[1].end, prints[1].end);
+    assert.equal(out[1].remainingMinutes, undefined);
+    // A live print: its finish is the printer's time left.
+    assert.equal(out[2].paused, false);
+    assert.equal(out[2].end, at(NOW + 25 * MIN));
+    assert.equal(out[2].remainingMinutes, 25);
+    assert.equal(out[2].overdue, false);
+    // Without the feed, nothing changes.
+    assert.equal(new CompareService({}, { designhub: null, bambu: null }).withPrinterState(prints, NOW), prints);
   });
 });

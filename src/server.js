@@ -73,7 +73,14 @@ export async function createApp(config, {
         { region: config.bambu.region, pushall: config.bambu.livePushall },
         // The printers come from the latest collection, so the feed adds no
         // requests to Bambu's API beyond looking up the user id once.
-        { bambu, store: liveLog, devices: () => service.lastFetch?.devices || [], now, ...(mqttConnect ? { connect: mqttConnect } : {}) },
+        {
+          bambu,
+          store: liveLog,
+          devices: () => service.lastFetch?.devices || [],
+          now,
+          onChange: () => liveChanged(),
+          ...(mqttConnect ? { connect: mqttConnect } : {}),
+        },
       );
     }
     reservationArchive = new ReservationArchive(config.reservationLogPath);
@@ -120,6 +127,18 @@ export async function createApp(config, {
     },
   });
   service.attachCollector(collector);
+  // A printer started, finished, paused or resumed: open pages redraw from
+  // saved data, as after a collection. A burst sends one update a second.
+  let liveUpdateTimer = null;
+  function liveChanged() {
+    if (liveUpdateTimer || !streams.size) return;
+    liveUpdateTimer = setTimeout(() => {
+      liveUpdateTimer = null;
+      const status = collector.status();
+      for (const res of streams) send(res, 'update', status);
+    }, 1000);
+    liveUpdateTimer.unref?.();
+  }
   const importer = new ReservationImport(service, { now });
   const bambuHistory = new BambuHistoryImport(service, { now });
 

@@ -112,6 +112,37 @@ export class CompareService {
     return out;
   }
 
+  // Adds what the live feed says the printers are doing now to the prints
+  // running on them. A print on a paused printer is marked `paused` (with
+  // `pausedSince` when the feed saw it pause), cloud prints included. A
+  // print from the live feed takes its finish from the printer's own time
+  // left (`remainingMinutes`). A printer runs one print at a time: the one
+  // marked is its latest running print of the kind the printer reports
+  // (cloud or not), else its latest running print.
+  withPrinterState(prints, now) {
+    const states = this.live ? this.live.printerStates() : null;
+    if (!states?.size) return prints;
+    const out = prints.slice();
+    for (const [serial, st] of states) {
+      const running = out.map((p, i) => [p, i]).filter(([p]) => p.deviceId === serial && p.status === 'running');
+      if (!running.length) continue;
+      const fromLive = st.printType !== 'cloud';
+      const sameKind = running.filter(([p]) => (p.source === 'live') === fromLive);
+      const [p, i] = (sameKind.length ? sameKind : running)
+        .reduce((a, b) => (Date.parse(b[0].start) > Date.parse(a[0].start) ? b : a));
+      const next = { ...p, paused: st.paused, pausedSince: st.pausedSince };
+      if (p.source === 'live' && st.finishAt != null) {
+        const start = Date.parse(p.start);
+        next.end = new Date(Math.max(st.finishAt, start + 60_000)).toISOString();
+        next.estimated = true;
+        next.overdue = false;
+        next.remainingMinutes = st.remainingMinutes;
+      }
+      out[i] = next;
+    }
+    return out;
+  }
+
   attachCollector(collector) {
     this.collector = collector;
   }
@@ -346,6 +377,7 @@ export class CompareService {
         .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
         .filter(Boolean);
       prints.push(...this.livePrints(sinceMs, untilMs, prints, names, now));
+      prints = this.withPrinterState(prints, now);
     }
 
     const result = buildComparison({
@@ -513,7 +545,7 @@ export class CompareService {
     const cloudPrints = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
       .filter(Boolean);
-    const prints = [...cloudPrints, ...this.livePrints(rangeStart, rangeEnd, cloudPrints, names, now)]
+    const prints = this.withPrinterState([...cloudPrints, ...this.livePrints(rangeStart, rangeEnd, cloudPrints, names, now)], now)
       .filter((p) => !missing.has(todayIn(zone, new Date(p.start))));
     // Runs past the range by the grace period, for bookings just after it
     // that a print in the range started in the grace period of.
@@ -600,7 +632,7 @@ export class CompareService {
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
       .filter(Boolean);
     all.push(...this.livePrints(-Infinity, Infinity, all, names, now));
-    const prints = all.filter((p) => savedDays.has(todayIn(zone, new Date(p.start))));
+    const prints = this.withPrinterState(all, now).filter((p) => savedDays.has(todayIn(zone, new Date(p.start))));
 
     const graceMs = this.config.graceMinutes * 60000;
     const comparison = buildComparison({

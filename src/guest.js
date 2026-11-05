@@ -21,6 +21,7 @@ const PRINT_KEYS = [
   'estimateMinutes', 'estimateSeconds', 'ranSeconds', 'weightGrams', 'lengthMeters', 'filaments', 'match',
   'uncoveredMinutes', 'noReservationReason', 'insideShare', 'uncovered', 'unmappedPrinter', 'overWeight', 'overTime',
   'large', 'materialTypes', 'cancelledUse', 'multiColor', 'multiMaterial', 'source',
+  'paused', 'pausedSince', 'remainingMinutes',
 ];
 const SUMMARY_KEYS = [
   'reservations', 'prints', 'reserved', 'partial', 'unreserved', 'reservationsWithoutPrint',
