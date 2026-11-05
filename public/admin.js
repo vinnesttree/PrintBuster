@@ -169,7 +169,8 @@ function sourceItem(name, found) {
 function liveItem(live) {
   if (!live) return null;
   if (!live.enabled) return el('li', {}, icon('icon-info', 'i'), 'Printers\u2019 live feed: off');
-  const seen = live.log?.prints ? ` · ${plural(live.log.prints, 'print')} logged from it` : '';
+  const seen = (live.log?.prints ? ` · ${plural(live.log.prints, 'print')} logged from it` : '')
+    + (live.since ? ` · connected times recorded since ${fmtDateTime(live.since)}` : '');
   if (live.connected) {
     return el('li', {}, icon('icon-ok', '✓'), `Printers\u2019 live feed: connected to ${plural(live.printers, 'printer')}`
       + `${live.lastMessageAt ? ` · last report ${fmtDateTime(live.lastMessageAt)}` : ''}${seen}`);

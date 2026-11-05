@@ -159,6 +159,7 @@ export function loadConfig(env = process.env, argv = process.argv) {
   const demo = demoFlag ?? !(designhub.configured || bambu.configured);
 
   const printLogPath = path.resolve(ROOT_DIR, str(env, 'PRINT_LOG_PATH', 'data/print-log.jsonl'));
+  const liveLogPath = path.resolve(ROOT_DIR, str(env, 'BAMBU_LIVE_LOG_PATH', path.join(path.dirname(printLogPath), 'live-prints.jsonl')));
 
   const timezone = str(env, 'TIMEZONE', 'America/Chicago');
   assertTimezone(timezone);
@@ -191,7 +192,10 @@ export function loadConfig(env = process.env, argv = process.argv) {
     flagDurationHours: num(env, 'FLAG_DURATION_HOURS', 12, { min: 0 }),
     printLogPath,
     // Prints seen on the live feed; next to the print log unless set.
-    liveLogPath: path.resolve(ROOT_DIR, str(env, 'BAMBU_LIVE_LOG_PATH', path.join(path.dirname(printLogPath), 'live-prints.jsonl'))),
+    liveLogPath,
+    // When the live feed was connected, and the printers' pauses: next to it.
+    liveCoveragePath: `${liveLogPath.replace(/\.jsonl$/, '')}.coverage.json`,
+    pauseLogPath: path.join(path.dirname(liveLogPath), 'printer-pauses.jsonl'),
     reservationLogPath: path.resolve(ROOT_DIR, str(env, 'RESERVATION_LOG_PATH', 'data/reservations.json')),
     usageLogPath: path.resolve(ROOT_DIR, str(env, 'USAGE_LOG_PATH', 'data/usage.json')),
     assignmentLogPath: path.resolve(ROOT_DIR, str(env, 'ASSIGNMENT_LOG_PATH', 'data/assignments.json')),

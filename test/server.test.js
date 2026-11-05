@@ -995,7 +995,33 @@ describe('server-side collection and live updates', () => {
 
     const guest = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
     assert.equal(guest.prints.find((p) => p.status === 'running' && p.paused).pausedSince, pausedAt);
+
+    // Resumed: the pause stays in the print's history. (Within 10 minutes of
+    // the last collection, so the cloud print still counts as running.)
+    clock += 8 * 60_000;
+    await report('D-ADA', { gcode_state: 'RUNNING' });
+    const later = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const resumed = later.prints.find((p) => p.id === 'bb-5');
+    assert.equal(resumed.paused, false);
+    assert.deepEqual(resumed.pauses, [{ start: pausedAt, end: new Date(clock).toISOString(), startSeen: true, endSeen: true, ongoing: false }]);
+    assert.equal(resumed.pausedMinutes, 8);
+    // The feed connected at 22:45: SD card and LAN prints before then may be missing.
+    assert.equal(later.liveFeed.since, '2026-10-27T22:45:00.000Z');
+    assert.deepEqual(later.liveFeed.gaps, [{ start: '2026-10-27T05:00:00.000Z', end: '2026-10-27T22:45:00.000Z' }]);
+    const guestLater = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
+    assert.equal(guestLater.prints.find((p) => p.pausedMinutes).pausedMinutes, 8);
+    assert.deepEqual(guestLater.liveFeed.gaps, later.liveFeed.gaps);
+    const usage = await (await api.get('/api/usage?from=2026-10-27&to=2026-10-27')).json();
+    assert.deepEqual(usage.liveFeed.gaps, later.liveFeed.gaps);
+
+    // Saved for later: the pause log and the feed's connected times.
     api.app.locals.live.stop();
+    await api.app.locals.service.pauseLog.queue;
+    await api.app.locals.live.feedCoverage.queue;
+    const pauses = (await fs.readFile(path.join(dir, 'printer-pauses.jsonl'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(pauses.at(-1).endSeen, true);
+    const coverage = JSON.parse(await fs.readFile(path.join(dir, 'live-prints.coverage.json'), 'utf8'));
+    assert.deepEqual(coverage.intervals, [['2026-10-27T22:45:00.000Z', new Date(clock).toISOString()]]);
   });
 
   it('counts open pages and tells them when new data is in', async () => {

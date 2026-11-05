@@ -2,7 +2,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import express from 'express';
 import { BambuClient } from './bambu.js';
-import { LIVE_FIELDS, LivePrintWatcher } from './bambulive.js';
+import { FeedCoverage, LIVE_FIELDS, LivePrintWatcher, PAUSE_FIELDS } from './bambulive.js';
 import { loadConfig, loadEnvFile, ROOT_DIR } from './config.js';
 import { DemoBambu, DemoDesignHub } from './demo.js';
 import { DesignHubClient } from './designhub.js';
@@ -41,6 +41,7 @@ export async function createApp(config, {
   let bambu;
   let printLog = null;
   let liveLog = null;
+  let pauseLog = null;
   let live = null;
   let reservationArchive = null;
   let usageLog = null;
@@ -69,6 +70,10 @@ export async function createApp(config, {
     if (config.bambu.configured && config.bambu.live) {
       liveLog = new PrintLog(config.liveLogPath, { coverage: false, fields: LIVE_FIELDS });
       await liveLog.load();
+      pauseLog = new PrintLog(config.pauseLogPath, { coverage: false, fields: PAUSE_FIELDS });
+      await pauseLog.load();
+      const feedCoverage = new FeedCoverage(config.liveCoveragePath);
+      await feedCoverage.load();
       live = new LivePrintWatcher(
         { region: config.bambu.region, pushall: config.bambu.livePushall },
         // The printers come from the latest collection, so the feed adds no
@@ -76,6 +81,8 @@ export async function createApp(config, {
         {
           bambu,
           store: liveLog,
+          pauses: pauseLog,
+          coverage: feedCoverage,
           devices: () => service.lastFetch?.devices || [],
           now,
           onChange: () => liveChanged(),
@@ -97,8 +104,10 @@ export async function createApp(config, {
   await createFirstAdmin(config, accounts, sessions);
   const limiter = new LoginLimiter({ now });
   const service = new CompareService(config, {
-    designhub, bambu, printLog, reservationArchive, usageLog, assignments, now, liveLog, live,
+    designhub, bambu, printLog, reservationArchive, usageLog, assignments, now, liveLog, live, pauseLog,
   });
+  // Pauses a previous run left open end where the feed was last seen.
+  await live?.recover();
   const bambuStatus = () => (bambu.status ? bambu.status() : { configured: false });
   // Every credential the server holds is for collecting data only. None is
   // ever sent to a browser: every JSON response and event is checked for them.
@@ -414,7 +423,9 @@ export async function createApp(config, {
       collector: collector.status(),
       collected: found ? { at: new Date(found.at).toISOString(), designhub: source(found.designhub), bambu: source(found.bambu) } : null,
       bambu: bambuStatus(),
-      live: config.demo ? null : live ? { ...live.status(), log: liveLog.stats() } : { enabled: false },
+      live: config.demo ? null : live ? {
+        ...live.status(), log: liveLog.stats(), since: live.coverage()[0] ? new Date(live.coverage()[0][0]).toISOString() : null,
+      } : { enabled: false },
       usageLog: service.usageLog ? service.usageLog.stats() : null,
       accounts: accounts.stats(),
     };
@@ -600,6 +611,8 @@ async function main() {
     server.close(async () => {
       await app.locals.service.printLog?.queue;
       await app.locals.service.liveLog?.queue;
+      await app.locals.service.pauseLog?.queue;
+      await app.locals.live?.feedCoverage?.queue;
       await app.locals.importer.running;
       await app.locals.bambuHistory.running;
       await app.locals.service.reservationArchive?.queue;

@@ -76,6 +76,11 @@ function bambuStatusText(p) {
   if (p.finishUnknown) return 'Finish not recorded (was printing when last checked)';
   // From the printers' live feed, for cloud prints too.
   if (p.paused) return `Paused${p.pausedSince ? ` since ${fmtWhen(ms(p.pausedSince))}` : ''}`;
+  const label = bambuStateText(p);
+  return p.pausedMinutes ? `${label} · paused ${fmtDuration(p.pausedMinutes * 60000)}` : label;
+}
+
+function bambuStateText(p) {
   if (p.status === 'running') {
     const when = fmtWhen(ms(p.end));
     return p.overdue ? `Printing (was due ${when})` : `Printing, due ${when}`;
@@ -231,6 +236,22 @@ function materialRows(p) {
 // so Bambu gave no slicer estimate of their filament.
 const LIVE_NOTE = 'Seen on the printer\u2019s live feed, not in Bambu\u2019s print history (started from the SD card or sent over LAN), so its filament isn\u2019t known';
 
+// "5:10–5:25 PM": a pause, from the printers' live feed. ~ marks an end
+// the feed didn't see: it connected while paused, or dropped mid-pause.
+function pauseSpan(x) {
+  const end = x.ongoing ? 'now' : `${x.endSeen ? '' : '~'}${fmtClock(ms(x.end))}`;
+  return `${x.startSeen ? '' : '~'}${fmtClock(ms(x.start))}\u2013${end}`;
+}
+
+function pauseRows(p) {
+  if (!p.pauses?.length) return [];
+  const rows = [ttRow('Paused', `${fmtDuration((p.pausedMinutes || 0) * 60000)} · ${p.pauses.map(pauseSpan).join(', ')}`)];
+  if (p.pauses.some((x) => !x.startSeen || (!x.endSeen && !x.ongoing))) {
+    rows.push(ttInfo('~ the printers\u2019 live feed connected or dropped then, so the pause may have been longer'));
+  }
+  return rows;
+}
+
 function printTooltip(p, row) {
   return () => [
     el('div', { className: 'tt-title', text: p.title + (p.plate ? ` · ${p.plate}` : '') }),
@@ -241,6 +262,7 @@ function printTooltip(p, row) {
     ttRow('Printer', `${p.deviceName}${row.unmapped ? ' (not matched to a Design Hub model)' : ''}`),
     ttRow('Time', `${fmtWhen(ms(p.start))} → ${fmtWhen(ms(p.end))}${p.estimated ? ' (est.)' : ''}`),
     ttRow('Duration', fmtDuration(ms(p.end) - ms(p.start))),
+    ...pauseRows(p),
     p.remainingMinutes != null
       ? ttRow('Time left', `${fmtDuration(p.remainingMinutes * 60000)} (printer\u2019s estimate${p.paused ? ', once it resumes' : ''})`)
       : null,
@@ -400,7 +422,7 @@ function renderChart() {
           + (usedGrams(p) == null ? ''
             : p.cancelledUse ? ` Cancelled; ${p.cancelledUse.upperBound ? 'up to' : 'about'} ${fmtGrams(usedGrams(p))} of filament used (estimate).`
               : ` ${fmtGrams(usedGrams(p))} of filament (estimate).`)
-          + (p.paused ? ' Paused.' : '')
+          + (p.paused ? ' Paused.' : p.pausedMinutes ? ` Paused for ${fmtDuration(p.pausedMinutes * 60000)} in all.` : '')
           + (p.large ? ' Large print.' : '')
           + (p.multiMaterial ? ` Multi-material: ${p.materialTypes.join(', ')}.` : p.multiColor ? ' Multi-colour.' : ''),
       });
@@ -412,6 +434,13 @@ function renderChart() {
           if (ge <= gs) continue;
           node.append(el('div', { className: 'print-seg', style: { left: `${((gs - s) / widthMs) * 100}%`, width: `${((ge - gs) / widthMs) * 100}%` } }));
         }
+      }
+      // Time the printer was paused, from the printers' live feed.
+      for (const x of p.pauses || []) {
+        const ps = Math.max(ms(x.start), s);
+        const pe = Math.min(ms(x.end), e);
+        if (pe <= ps) continue;
+        node.append(el('div', { className: 'print-pause', style: { left: `${((ps - s) / widthMs) * 100}%`, width: `${((pe - ps) / widthMs) * 100}%` } }));
       }
       if (p.estimated && now < e) {
         const from = Math.max(now, s);
@@ -569,6 +598,8 @@ function renderBanners() {
         .filter(Boolean).join(' ')));
   }
   if (!demo && printGaps.length) list.push(gapBanner(printGaps, sources.bambu.log, printsAvailable));
+  const feed = liveFeedBanner(state.data.liveFeed, state.data.day.start, state.data.now);
+  if (feed) list.push(feed);
   if (sources.bambu.log?.writeError) {
     list.push(banner('icon-bad', '✕', 'Could not save the print log', `${sources.bambu.log.writeError}. New prints are kept in memory and saved once this is fixed, but are lost if PrintBuster restarts first. Check that the data folder (or Docker volume) is writable.`));
   }
@@ -599,6 +630,17 @@ function renderBanners() {
 }
 
 // Explain spans of time the print log never observed.
+// When the printers' live feed wasn't connected, prints started from the SD
+// card or sent over LAN may be missing: Bambu's print history leaves them out.
+function liveFeedBanner(feed, from, now) {
+  if (!feed?.gaps.length) return null;
+  const fmtGap = (g) => `${fmtWhen(ms(g.start))} \u2013 ${fmtWhen(ms(g.end))}`;
+  const since = feed.since ? ` The live feed's record starts ${fmtDayShort(ms(feed.since))}, ${fmtClock(ms(feed.since))}.` : ' The live feed hasn\u2019t connected yet.';
+  const whole = feed.gaps.length === 1 && ms(feed.gaps[0].start) <= ms(from) && ms(feed.gaps[0].end) >= Math.min(ms(now), ms(state.data.day.end));
+  return banner('icon-info', 'i', whole ? 'SD card and LAN prints aren\u2019t known for this day' : 'SD card and LAN prints may be missing',
+    `Prints started from a printer\u2019s SD card or sent over LAN come only from the printers\u2019 live feed, which wasn\u2019t connected ${whole ? 'on this day' : `then: ${feed.gaps.map(fmtGap).join('; ')}`}.${since}`);
+}
+
 function gapBanner(gaps, log, printsAvailable) {
   const fmtGap = (g) => `${fmtWhen(ms(g.start))} – ${fmtWhen(ms(g.end))}`;
   const since = log?.since ? `PrintBuster's print log starts ${fmtDayShort(ms(log.since))}, ${fmtClock(ms(log.since))}.` : 'Nothing has been saved to the print log yet.';

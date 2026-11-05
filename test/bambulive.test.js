@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { normalizeTask } from '../src/bambu.js';
-import { jobTitle, LIVE_FIELDS, LivePrintWatcher, plausibleStart, uidFromToken } from '../src/bambulive.js';
+import {
+  FeedCoverage, jobTitle, LIVE_FIELDS, LivePrintWatcher, PAUSE_FIELDS, plausibleStart, uidFromToken,
+} from '../src/bambulive.js';
 import { PrintLog } from '../src/printlog.js';
 import { CompareService, sameAsCloudPrint } from '../src/service.js';
 
@@ -44,11 +46,22 @@ async function setup({ token = TOKEN, devices = DEVICES, pushall = true, dir, on
   dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'pb-livefeed-'));
   const store = new PrintLog(path.join(dir, 'live-prints.jsonl'), { coverage: false, fields: LIVE_FIELDS });
   await store.load();
+  const pauses = new PrintLog(path.join(dir, 'printer-pauses.jsonl'), { coverage: false, fields: PAUSE_FIELDS });
+  await pauses.load();
+  const feedCoverage = new FeedCoverage(path.join(dir, 'live-prints.coverage.json'));
+  await feedCoverage.load();
+  // Interval timers the test runs by hand.
+  const intervals = new Set();
+  const timers = {
+    setInterval: (fn, msEvery) => { const t = { fn, msEvery }; intervals.add(t); return t; },
+    clearInterval: (t) => intervals.delete(t),
+  };
   const mq = fakeMqtt();
   const clock = { now: NOW };
   const bambu = { token, apiGet: async () => ({ uid: 777 }) };
   const watcher = new LivePrintWatcher({ region: 'global', pushall }, {
     bambu, store, devices: () => devices, connect: mq.connect, now: () => clock.now, onChange,
+    pauses, coverage: feedCoverage, timers,
   });
   // Delivers a report from a printer, then waits for the print log write.
   const report = async (serial, print) => {
@@ -56,7 +69,8 @@ async function setup({ token = TOKEN, devices = DEVICES, pushall = true, dir, on
     await store.queue;
   };
   const records = () => [...store.records.values()];
-  return { dir, store, mq, clock, bambu, watcher, report, records };
+  const pauseRecords = () => [...pauses.records.values()];
+  return { dir, store, pauses, feedCoverage, intervals, mq, clock, bambu, watcher, report, records, pauseRecords };
 }
 
 async function connected(opts) {
@@ -429,6 +443,99 @@ describe('printer state from the live feed', () => {
   });
 });
 
+describe('pause history and feed coverage', () => {
+  it('saves each pause, with whether its start and end were seen', async () => {
+    const t = await connected();
+    await t.report('SN-ADA', { gcode_state: 'RUNNING', print_type: 'cloud', subtask_name: 'Gear' });
+    t.clock.now += 10 * MIN;
+    await t.report('SN-ADA', { gcode_state: 'PAUSE' });
+    let [pause] = t.pauseRecords();
+    assert.equal(pause.startTime, new Date(NOW + 10 * MIN).toISOString());
+    assert.equal(pause.startSeen, true);
+    assert.equal(pause.endTime, undefined);
+    assert.equal(pause.deviceName, 'Ada');
+    assert.equal(pause.title, 'Gear');
+    t.clock.now += 15 * MIN;
+    await t.report('SN-ADA', { gcode_state: 'RUNNING' });
+    [pause] = t.pauseRecords();
+    assert.equal(pause.endTime, new Date(NOW + 25 * MIN).toISOString());
+    assert.equal(pause.endSeen, true);
+
+    // Saved to disk and read back.
+    await t.pauses.queue;
+    const again = new PrintLog(t.pauses.file, { coverage: false, fields: PAUSE_FIELDS });
+    await again.load();
+    assert.equal([...again.records.values()][0].endSeen, true);
+  });
+
+  it('ends a pause where the feed dropped, and starts one where it connected', async () => {
+    const t = await connected();
+    await t.report('SN-OHM', { gcode_state: 'PAUSE', print_type: 'local', subtask_name: 'Held' });
+    let [pause] = t.pauseRecords();
+    assert.equal(pause.startSeen, false, 'already paused when the feed connected');
+    t.clock.now += 5 * MIN;
+    t.mq.last.emit('close');
+    [pause] = t.pauseRecords();
+    assert.equal(pause.endTime, new Date(NOW + 5 * MIN).toISOString());
+    assert.equal(pause.endSeen, false);
+
+    // Back and still paused: a new pause, its start not seen.
+    t.clock.now += 5 * MIN;
+    t.mq.last.emit('connect');
+    await t.report('SN-OHM', { gcode_state: 'PAUSE' });
+    assert.equal(t.pauseRecords().length, 2);
+    assert.equal(t.pauseRecords()[1].startSeen, false);
+
+    // The printer dropping off the broker ends it too.
+    t.mq.last.emit('message', 'device/SN-OHM/report', Buffer.from(JSON.stringify({ event: { event: 'client.disconnected' } })));
+    assert.equal(t.pauseRecords()[1].endSeen, false);
+    assert.ok(t.pauseRecords()[1].endTime);
+  });
+
+  it('records when the feed was connected, extended while it stays up', async () => {
+    const t = await connected();
+    assert.equal(t.intervals.size, 1);
+    assert.equal([...t.intervals][0].msEvery, 60_000);
+    t.clock.now += 3 * MIN;
+    await [...t.intervals][0].fn();
+    assert.deepEqual(t.feedCoverage.coverage(), [[NOW, NOW + 3 * MIN]]);
+    t.clock.now += 2 * MIN;
+    t.mq.last.emit('close');
+    assert.equal(t.intervals.size, 0);
+    await t.feedCoverage.queue;
+    assert.deepEqual(t.feedCoverage.coverage(), [[NOW, NOW + 5 * MIN]]);
+
+    // While disconnected, the gap stays; reconnecting adds the new span.
+    t.clock.now += 30 * MIN;
+    t.mq.last.emit('connect');
+    t.clock.now += MIN;
+    assert.deepEqual(t.watcher.coverage(), [[NOW, NOW + 5 * MIN], [NOW + 35 * MIN, NOW + 36 * MIN]]);
+
+    // Saved to disk.
+    const again = new FeedCoverage(t.feedCoverage.file);
+    await again.load();
+    assert.deepEqual(again.coverage(), [[NOW, NOW + 5 * MIN]]);
+  });
+
+  it('ends pauses a stopped run left open where the feed was last seen', async () => {
+    const t = await connected();
+    await t.report('SN-ADA', { gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'Lid' });
+    await t.report('SN-ADA', { gcode_state: 'PAUSE' });
+    t.clock.now += 4 * MIN;
+    await [...t.intervals][0].fn();
+    await t.pauses.queue;
+    // The process dies here: the pause stays open on disk.
+
+    const u = await setup({ dir: t.dir });
+    u.clock.now = NOW + 60 * MIN;
+    assert.equal(u.pauseRecords()[0].endTime, undefined);
+    await u.watcher.recover();
+    const [pause] = u.pauseRecords();
+    assert.equal(pause.endTime, new Date(NOW + 4 * MIN).toISOString());
+    assert.equal(pause.endSeen, false);
+  });
+});
+
 describe('live prints in the comparison', () => {
   const live = (start, end, extra = {}) => ({
     id: 'bb-live', deviceId: 'SN-ADA', start: new Date(start).toISOString(), end: new Date(end).toISOString(), ...extra,
@@ -490,5 +597,48 @@ describe('live prints in the comparison', () => {
     assert.equal(out[2].overdue, false);
     // Without the feed, nothing changes.
     assert.equal(new CompareService({}, { designhub: null, bambu: null }).withPrinterState(prints, NOW), prints);
+  });
+
+  it('adds the saved pauses each print had, cloud or live, clipped to it', async () => {
+    const t = await setup();
+    const at = (msAt) => new Date(msAt).toISOString();
+    t.pauses.record({
+      fetchedAt: NOW,
+      tasks: [
+        { id: 'p1', deviceId: 'SN-ADA', startTime: at(NOW - 3 * 3600_000), endTime: at(NOW - 3 * 3600_000 + 20 * MIN), startSeen: true, endSeen: true },
+        { id: 'p2', deviceId: 'SN-ADA', startTime: at(NOW - 2.5 * 3600_000), endTime: at(NOW - 2 * 3600_000 + 10 * MIN), startSeen: false, endSeen: false },
+        { id: 'p3', deviceId: 'SN-ADA', startTime: at(NOW - 10 * MIN), startSeen: true },
+        { id: 'p4', deviceId: 'SN-OHM', startTime: at(NOW - 3 * 3600_000), endTime: at(NOW - 2 * 3600_000), startSeen: true, endSeen: true },
+      ],
+    });
+    const service = new CompareService({}, { designhub: null, bambu: null, pauseLog: t.pauses });
+    const prints = [
+      { id: 'bb-1', deviceId: 'SN-ADA', status: 'finished', start: at(NOW - 3.5 * 3600_000), end: at(NOW - 2 * 3600_000) },
+      { id: 'bb-live-2', source: 'live', deviceId: 'SN-ADA', status: 'running', start: at(NOW - 30 * MIN), end: at(NOW + 30 * MIN) },
+      { id: 'bb-3', deviceId: 'SN-ADA', status: 'finished', start: at(NOW - 6 * 3600_000), end: at(NOW - 5 * 3600_000) },
+    ];
+    const [first, second, third] = service.withPrinterState(prints, NOW);
+    // Two pauses; the second clipped to the print's end, which it didn't see.
+    assert.deepEqual(first.pauses, [
+      { start: at(NOW - 3 * 3600_000), end: at(NOW - 3 * 3600_000 + 20 * MIN), startSeen: true, endSeen: true, ongoing: false },
+      { start: at(NOW - 2.5 * 3600_000), end: at(NOW - 2 * 3600_000), startSeen: false, endSeen: false, ongoing: false },
+    ]);
+    assert.equal(first.pausedMinutes, 50);
+    // A pause under way runs to now.
+    assert.deepEqual(second.pauses, [{ start: at(NOW - 10 * MIN), end: at(NOW), startSeen: true, endSeen: false, ongoing: true }]);
+    assert.equal(second.pausedMinutes, 10);
+    assert.equal(third.pauses, undefined);
+  });
+
+  it('lists the times the feed wasn\u2019t connected, leaving out short reconnects', () => {
+    const coverage = [[NOW - 5 * 3600_000, NOW - 4 * 3600_000], [NOW - 4 * 3600_000 + MIN, NOW - 3 * 3600_000], [NOW - 2 * 3600_000, NOW]];
+    const service = new CompareService({}, { designhub: null, bambu: null, live: { coverage: () => coverage } });
+    const feed = service.liveFeedGaps(NOW - 6 * 3600_000, NOW);
+    assert.equal(feed.since, new Date(NOW - 5 * 3600_000).toISOString());
+    assert.deepEqual(feed.gaps.map((g) => [Date.parse(g.start), Date.parse(g.end)]), [
+      [NOW - 6 * 3600_000, NOW - 5 * 3600_000],
+      [NOW - 3 * 3600_000, NOW - 2 * 3600_000],
+    ]);
+    assert.equal(new CompareService({}, { designhub: null, bambu: null }).liveFeedGaps(0, NOW), null);
   });
 });

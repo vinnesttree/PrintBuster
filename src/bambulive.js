@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import mqtt from 'mqtt';
-import { FIELDS } from './printlog.js';
+import { writeAtomic } from './files.js';
+import { FIELDS, mergeIntervals } from './printlog.js';
 
 // Bambu's cloud print history (/my/tasks) only lists jobs sent through the
 // cloud. A printer connected to the cloud also streams its live status to
@@ -27,6 +29,10 @@ const BROKERS = {
 
 // The print log's task fields, plus where each print was seen.
 export const LIVE_FIELDS = [...FIELDS, 'source', 'printType', 'gcodeFile'];
+// A pause, saved per printer (a PrintLog of these): when the printer was
+// seen paused, and whether each end is when it actually paused or resumed
+// (`startSeen`, `endSeen`) or only where the feed's view began or ended.
+export const PAUSE_FIELDS = ['startTime', 'endTime', 'deviceId', 'deviceName', 'title', 'printType', 'startSeen', 'endSeen'];
 
 // gcode_state values (upper case on the wire).
 const ACTIVE = new Set(['PREPARE', 'SLICING', 'RUNNING', 'PAUSE']);
@@ -43,6 +49,9 @@ const PUSHALL_MIN_MS = 5 * 60_000;
 const ESTIMATE_SAVE_MS = 15 * 60_000;
 // After the broker rejects the sign-in, wait this long (or for a new token).
 const AUTH_RETRY_MS = 10 * 60_000;
+// While connected, the saved coverage is extended this often, so a crash
+// loses at most this much of it.
+const COVERAGE_TICK_MS = 60_000;
 const PUSHALL = JSON.stringify({ pushing: { sequence_id: '0', command: 'pushall', version: 1, push_target: 1 } });
 
 const iso = (ms) => new Date(ms).toISOString();
@@ -82,6 +91,47 @@ export function plausibleStart(value, nowMs, lastEndMs = null) {
   return at;
 }
 
+// The times the live feed was connected, saved to a small JSON file, so
+// pages can say when prints started from the SD card or sent over LAN may
+// be missing.
+export class FeedCoverage {
+  constructor(file) {
+    this.file = file;
+    this.intervals = [];
+    this.writeError = null;
+    this.queue = Promise.resolve();
+  }
+
+  async load() {
+    try {
+      const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
+      this.intervals = mergeIntervals((saved.intervals || []).map(([s, e]) => [Date.parse(s), Date.parse(e)]));
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') console.warn(`Live feed: ignoring unreadable ${this.file} (${err.message})`);
+    }
+  }
+
+  // Records that the feed was connected from `start` to `end`.
+  extend(start, end) {
+    if (!(end > start)) return this.queue;
+    this.intervals = mergeIntervals([...this.intervals, [start, end]]);
+    this.queue = this.queue.then(async () => {
+      try {
+        await writeAtomic(this.file, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`);
+        this.writeError = null;
+      } catch (err) {
+        if (this.writeError !== err.message) console.error(`Could not save the live feed coverage: ${err.message}`);
+        this.writeError = err.message;
+      }
+    });
+    return this.queue;
+  }
+
+  coverage() {
+    return this.intervals.map(([s, e]) => [s, e]);
+  }
+}
+
 const isAuthError = (err) => err?.code === 4 || err?.code === 5 || err?.code === 134 || err?.code === 135
   || /not authori[sz]ed|bad user ?name or password/i.test(String(err?.message || ''));
 
@@ -89,12 +139,18 @@ export class LivePrintWatcher {
   // `store` is a PrintLog without coverage. `devices()` returns the printers
   // from the latest Bambu collection. `connect` is mqtt.connect (tests pass
   // a stand-in). `onChange` runs when a printer starts, finishes, pauses or
-  // resumes a print, so open pages can redraw at once.
+  // resumes a print, so open pages can redraw at once. `pauses` (a PrintLog
+  // of PAUSE_FIELDS) and `coverage` (a FeedCoverage) are optional.
   constructor(cfg, {
     bambu, store, devices = () => [], connect = mqtt.connect, now = () => Date.now(), onChange = () => {},
+    pauses = null, coverage = null, timers = globalThis,
   }) {
     this.cfg = cfg;
     this.onChange = onChange;
+    this.pauses = pauses;
+    this.feedCoverage = coverage;
+    this.timers = timers;
+    this.coverageTimer = null;
     this.bambu = bambu;
     this.store = store;
     this.devices = devices;
@@ -131,10 +187,50 @@ export class LivePrintWatcher {
 
   disconnect() {
     const client = this.client;
+    const wasConnected = this.connected;
     this.client = null;
     this.connected = false;
     this.subscribed.clear();
+    if (wasConnected) this.lostFeed();
     client?.end(true);
+  }
+
+  // The feed stopped: save how long it was connected, and end the pauses it
+  // was watching where its view of them ends.
+  lostFeed() {
+    const now = this.now();
+    this.timers.clearInterval(this.coverageTimer);
+    this.coverageTimer = null;
+    if (this.connectedAt != null) this.feedCoverage?.extend(this.connectedAt, now);
+    for (const p of this.printers.values()) this.endPause(p, now, false);
+  }
+
+  // Extends the saved coverage to now while connected.
+  tickCoverage() {
+    if (this.connected && this.connectedAt != null) return this.feedCoverage?.extend(this.connectedAt, this.now());
+    return null;
+  }
+
+  // Pauses left open by a previous run (it stopped without saying when they
+  // ended) end where the saved coverage last saw the feed connected.
+  recover() {
+    if (!this.pauses) return null;
+    const lastSeen = this.feedCoverage?.coverage().at(-1)?.[1] ?? null;
+    const open = [...this.pauses.records.values()].filter((r) => !r.endTime);
+    if (!open.length) return null;
+    const tasks = open.map(({ recordedAt, ...r }) => {
+      const start = Date.parse(r.startTime);
+      return { ...r, endTime: iso(lastSeen != null && lastSeen > start ? lastSeen : start), endSeen: false };
+    });
+    return this.pauses.record({ tasks, devices: this.devices() || [], fetchedAt: this.now() });
+  }
+
+  // Times the feed was connected, as [start, end] ms pairs, including the
+  // current connection up to now.
+  coverage() {
+    const saved = this.feedCoverage ? this.feedCoverage.coverage() : [];
+    if (!this.connected || this.connectedAt == null) return saved;
+    return mergeIntervals([...saved, [this.connectedAt, Math.max(this.now(), this.connectedAt + 1)]]);
   }
 
   status() {
@@ -257,6 +353,9 @@ export class LivePrintWatcher {
       this.connectedAt = this.now();
       this.error = null;
       this.subscribed.clear();
+      this.timers.clearInterval(this.coverageTimer);
+      this.coverageTimer = this.timers.setInterval(() => this.tickCoverage(), COVERAGE_TICK_MS);
+      this.coverageTimer?.unref?.();
       this.subscribeAll();
     });
     client.on('message', (topic, payload) => {
@@ -264,6 +363,7 @@ export class LivePrintWatcher {
     });
     client.on('close', () => {
       if (this.client !== client) return;
+      if (this.connected) this.lostFeed();
       this.connected = false;
       this.subscribed.clear();
       // Whatever is printing when the feed comes back may have started
@@ -309,8 +409,9 @@ export class LivePrintWatcher {
     let p = this.printers.get(serial);
     if (!p) {
       // report: the printer's state so far (the P1 series sends only what
-      // changed). job: the print the feed shows running.
-      p = { report: {}, job: null, activeEpoch: null, lastEnd: null, sawIdle: false, lastPushall: null };
+      // changed). job: the print the feed shows running. pause: the pause
+      // under way, as saved.
+      p = { report: {}, job: null, activeEpoch: null, lastEnd: null, sawIdle: false, lastPushall: null, pause: null };
       this.printers.set(serial, p);
     }
     return p;
@@ -338,6 +439,7 @@ export class LivePrintWatcher {
     if (json?.event?.event === 'client.disconnected') {
       p.job = null;
       p.sawIdle = false;
+      this.endPause(p, this.now(), false);
       if (p.live) {
         p.live = null;
         this.onChange();
@@ -351,6 +453,7 @@ export class LivePrintWatcher {
     const state = String(r.gcode_state ?? '').toUpperCase();
     const now = this.now();
     this.track(p, delta, state, now);
+    this.trackPause(serial, p, now);
     if (ACTIVE.has(state)) return this.active(serial, p, r, now);
     if (state in ENDED) return this.ended(serial, p, r, now, ENDED[state]);
     if (state) {
@@ -383,6 +486,38 @@ export class LivePrintWatcher {
       printType: String(r.print_type ?? '').toLowerCase() || null,
     };
     if (!sameRun || prev.state !== state) this.onChange();
+  }
+
+  // Saves pauses as they start and end: a pause seen starting begins then,
+  // one already under way when first seen begins there (startSeen false).
+  trackPause(serial, p, now) {
+    const live = p.live;
+    if (live.paused && !p.pause) {
+      const startSeen = live.pausedSince != null;
+      p.pause = {
+        id: `pause-${serial}-${Math.floor(now / 1000)}`,
+        startTime: iso(startSeen ? live.pausedSince : now),
+        deviceId: serial,
+        title: jobTitle(p.report),
+        printType: live.printType || undefined,
+        startSeen,
+      };
+      this.savePause(p.pause, now);
+    } else if (!live.paused && p.pause) {
+      this.endPause(p, now, true);
+    }
+  }
+
+  endPause(p, now, seen) {
+    if (!p.pause) return;
+    const done = { ...p.pause, endTime: iso(Math.max(now, Date.parse(p.pause.startTime))), endSeen: seen };
+    p.pause = null;
+    this.savePause(done, now);
+  }
+
+  savePause(pause, now) {
+    if (!this.pauses) return;
+    this.pauses.record({ tasks: [pause], devices: this.devices() || [], fetchedAt: now });
   }
 
   // Cloud prints are in Bambu's print history already.
