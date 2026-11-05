@@ -23,6 +23,23 @@ const REFRESH_MIN_AGE_MS = 15 * 1000;
 // retry on every live update while Design Hub is down.
 const MISSING_DAY_RETRY_MS = 60 * 1000;
 
+// A print seen on the live feed is the same as a cloud print when they are
+// on one printer and overlap for most of the shorter of the two. A printer
+// runs one job at a time, so back-to-back prints overlap by seconds at most.
+export function sameAsCloudPrint(live, cloud) {
+  if (live.deviceId !== cloud.deviceId) return false;
+  const ls = Date.parse(live.start);
+  const le = Date.parse(live.end);
+  const cs = Date.parse(cloud.start);
+  const ce = Date.parse(cloud.end);
+  const overlap = Math.min(le, ce) - Math.max(ls, cs);
+  return overlap > 0 && overlap >= 0.5 * Math.min(le - ls, ce - cs);
+}
+
+// Gaps in the live feed shorter than this aren't listed: a reconnect takes
+// about 30 seconds, and a print under way then is picked up when it's back.
+const LIVE_GAP_MIN_MS = 2 * 60_000;
+
 // The per-print results of attributeUsage, as saved in the usage log.
 const usageRecords = (usage) => [...usage.users.flatMap((u) => u.list), ...usage.unattributed.list]
   .map((r) => ({ ...r, counted: Boolean(r.reservation || r.assignedTo) && !r.excluded }));
@@ -53,14 +70,40 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
+// The pauses on a print's printer that fall within the print, clipped to it,
+// as ISO times. Pauses outside every print (the printer idle) aren't shown.
+function pausesWithin(print, pauses) {
+  if (!pauses?.length) return [];
+  const s = Date.parse(print.start);
+  const e = Date.parse(print.end);
+  return pauses
+    .filter((x) => Math.min(x.end, e) > Math.max(x.start, s))
+    .sort((a, b) => a.start - b.start)
+    .map((x) => ({
+      start: new Date(Math.max(x.start, s)).toISOString(),
+      end: new Date(Math.min(x.end, e)).toISOString(),
+      // A pause clipped to the print's own start or end isn't seen there.
+      startSeen: x.startSeen && x.start >= s,
+      endSeen: x.endSeen && x.end <= e,
+      ongoing: x.ongoing,
+    }));
+}
+
 export class CompareService {
   constructor(config, {
     designhub, bambu, printLog = null, reservationArchive = null, usageLog = null, assignments = null, now = () => Date.now(),
+    liveLog = null, live = null, pauseLog = null,
   }) {
     this.config = config;
     this.designhub = designhub;
     this.bambu = bambu;
     this.printLog = printLog;
+    // Prints seen on the printers' live MQTT feed (bambulive.js), for the
+    // ones Bambu's cloud history leaves out, and the watcher that logs them.
+    this.liveLog = liveLog;
+    this.live = live;
+    // Printer pauses seen on the live feed (bambulive.js).
+    this.pauseLog = pauseLog;
     this.reservationArchive = reservationArchive;
     this.usageLog = usageLog;
     this.assignments = assignments;
@@ -76,6 +119,103 @@ export class CompareService {
     // it keeps current. Set the collector with attachCollector().
     this.collected = null;
     this.collector = null;
+  }
+
+  // Prints from the live feed that started in [sinceMs, untilMs), normalized
+  // like cloud prints and marked `source: 'live'`, leaving out any that are
+  // the same as one of `cloudPrints`. They have no filament weight.
+  livePrints(sinceMs, untilMs, cloudPrints, names, now) {
+    if (!this.liveLog) return [];
+    const printing = this.live ? this.live.activeIds() : new Set();
+    const out = [];
+    for (const t of this.liveLog.query(sinceMs, untilMs)) {
+      if (String(t.printType || '').toLowerCase() === 'cloud') continue;
+      const p = normalizeTask(t, names, now, { confirmed: printing.has(String(t.id)) });
+      if (!p || cloudPrints.some((c) => sameAsCloudPrint(p, c))) continue;
+      out.push({ ...p, source: 'live' });
+    }
+    return out;
+  }
+
+  // Adds what the live feed says the printers are doing now to the prints
+  // running on them. A print on a paused printer is marked `paused` (with
+  // `pausedSince` when the feed saw it pause), cloud prints included. A
+  // print from the live feed takes its finish from the printer's own time
+  // left (`remainingMinutes`). A printer runs one print at a time: the one
+  // marked is its latest running print of the kind the printer reports
+  // (cloud or not), else its latest running print.
+  //
+  // Every print also gets the saved pauses that fall within it on its
+  // printer (`pauses`, `pausedMinutes`), whether it came from the cloud
+  // history or the live feed.
+  withPrinterState(prints, now) {
+    const states = this.live ? this.live.printerStates() : new Map();
+    const pauses = this.pausesByDevice(now);
+    if (!states.size && !pauses.size) return prints;
+    const out = prints.slice();
+    for (const [serial, st] of states) {
+      const running = out.map((p, i) => [p, i]).filter(([p]) => p.deviceId === serial && p.status === 'running');
+      if (!running.length) continue;
+      const fromLive = st.printType !== 'cloud';
+      const sameKind = running.filter(([p]) => (p.source === 'live') === fromLive);
+      const [p, i] = (sameKind.length ? sameKind : running)
+        .reduce((a, b) => (Date.parse(b[0].start) > Date.parse(a[0].start) ? b : a));
+      const next = { ...p, paused: st.paused, pausedSince: st.pausedSince };
+      if (p.source === 'live' && st.finishAt != null) {
+        const start = Date.parse(p.start);
+        next.end = new Date(Math.max(st.finishAt, start + 60_000)).toISOString();
+        next.estimated = true;
+        next.overdue = false;
+        next.remainingMinutes = st.remainingMinutes;
+      }
+      out[i] = next;
+    }
+    if (pauses.size) {
+      for (let i = 0; i < out.length; i++) {
+        const within = pausesWithin(out[i], pauses.get(out[i].deviceId));
+        if (within.length) {
+          const ms = within.reduce((sum, w) => sum + Date.parse(w.end) - Date.parse(w.start), 0);
+          out[i] = { ...out[i], pauses: within, pausedMinutes: Math.round(ms / 60000) };
+        }
+      }
+    }
+    return out;
+  }
+
+  // The saved pauses by printer serial, as { start, end, startSeen,
+  // endSeen, ongoing } in ms. One with no end yet is under way: it runs to
+  // now (pauses a stopped run left open are ended at startup).
+  pausesByDevice(now) {
+    const map = new Map();
+    if (!this.pauseLog) return map;
+    for (const r of this.pauseLog.records.values()) {
+      const start = Date.parse(r.startTime);
+      if (!Number.isFinite(start) || !r.deviceId) continue;
+      const ongoing = !r.endTime;
+      const pause = {
+        start,
+        end: ongoing ? Math.max(now, start) : Date.parse(r.endTime),
+        startSeen: r.startSeen !== false,
+        endSeen: !ongoing && r.endSeen !== false,
+        ongoing,
+      };
+      if (!map.has(r.deviceId)) map.set(r.deviceId, []);
+      map.get(r.deviceId).push(pause);
+    }
+    return map;
+  }
+
+  // Where the live feed wasn't connected between `start` and `end`, for
+  // pages to say SD card and LAN prints may be missing then. Null without
+  // the live feed.
+  liveFeedGaps(start, end) {
+    if (!this.live) return null;
+    const coverage = this.live.coverage();
+    const gaps = end > start ? uncoveredSegments(start, end, coverage).filter(([s, e]) => e - s >= LIVE_GAP_MIN_MS) : [];
+    return {
+      since: coverage.length ? new Date(coverage[0][0]).toISOString() : null,
+      gaps: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
+    };
   }
 
   attachCollector(collector) {
@@ -311,6 +451,8 @@ export class CompareService {
       prints = tasks
         .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
         .filter(Boolean);
+      prints.push(...this.livePrints(sinceMs, untilMs, prints, names, now));
+      prints = this.withPrinterState(prints, now);
     }
 
     const result = buildComparison({
@@ -330,6 +472,7 @@ export class CompareService {
     result.demo = this.config.demo;
     result.printsAvailable = prints !== null && printsAvailable;
     result.printGaps = gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() }));
+    result.liveFeed = this.liveFeedGaps(dayStart, pastEnd);
     const stale = hub.ok ? hub.got.find((d) => d.from === 'stale') : null;
     result.sources = {
       designhub: hub.ok
@@ -448,6 +591,7 @@ export class CompareService {
       graceMinutes: this.config.graceMinutes,
       maxOutsideShare: MAX_OUTSIDE_SHARE,
       printGaps: gaps.map(([s, e]) => ({ start: new Date(s).toISOString(), end: new Date(e).toISOString() })),
+      liveFeed: this.liveFeedGaps(rangeStart, pastEnd),
       collector: this.collector ? this.collector.status() : null,
       sources: {
         designhub: hubError
@@ -475,9 +619,11 @@ export class CompareService {
 
     const names = new Map((devices || []).map((d) => [d.dev_id, d.name]));
     const missing = new Set(missingDays);
-    const prints = tasks
+    const cloudPrints = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
-      .filter((p) => p && !missing.has(todayIn(zone, new Date(p.start))));
+      .filter(Boolean);
+    const prints = this.withPrinterState([...cloudPrints, ...this.livePrints(rangeStart, rangeEnd, cloudPrints, names, now)], now)
+      .filter((p) => !missing.has(todayIn(zone, new Date(p.start))));
     // Runs past the range by the grace period, for bookings just after it
     // that a print in the range started in the grace period of.
     const comparison = buildComparison({
@@ -562,7 +708,8 @@ export class CompareService {
     const all = tasks
       .map((t) => normalizeTask(t, names, now, { confirmed: confirmed.has(String(t.id)) }))
       .filter(Boolean);
-    const prints = all.filter((p) => savedDays.has(todayIn(zone, new Date(p.start))));
+    all.push(...this.livePrints(-Infinity, Infinity, all, names, now));
+    const prints = this.withPrinterState(all, now).filter((p) => savedDays.has(todayIn(zone, new Date(p.start))));
 
     const graceMs = this.config.graceMinutes * 60000;
     const comparison = buildComparison({

@@ -3,7 +3,7 @@
 PrintBuster compares two lists:
 
 - **Reservations** from the Engineering Design Hub admin agenda (Studio Manager, `designhub-manager.unl.edu`)
-- **Print jobs** from the Bambu Lab cloud (what Bambu Studio and Bambu Handy send to the printers)
+- **Print jobs** from the Bambu Lab cloud (what Bambu Studio and Bambu Handy send to the printers), plus prints started from a printer's SD card or sent over LAN, seen on the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints)
 
 It draws both on one overlapping waterfall chart, with one row per printer. Prints that ran without a reservation are highlighted.
 
@@ -16,6 +16,7 @@ It draws both on one overlapping waterfall chart, with one row per printer. Prin
 - **A dashed grams tag starting with ~** is a cancelled or failed print's estimated use. Bambu's estimate covers the whole job, so a cancelled print shows the share of it that matches how long the print ran, the same amount the usage page charges (see [Filament usage rules](#filament-usage-rules)). For example, `~30 g` is a 120 g job cancelled a quarter of the way through its estimated time. The tooltip and the table view give the share, the length and each filament scaled the same way, next to the whole job's estimate. When Bambu recorded no end time or no time estimate, how long it ran is unknown, so the tag shows the whole job's amount as an upper bound, e.g. `≤120 g`. A cancelled print is flagged as over the weight limit only when its estimated use is, never on an upper bound.
 - **A bold, inverted tag with ▲** marks a print over `FLAG_WEIGHT_GRAMS` (default 200 g).
 - **A striped blue, green and violet band** under a print marks multi-colour or multi-material prints. These colours never mean a print's status, which uses red and yellow.
+- **Hatched sections of a bar** are times the printer was paused, cloud prints included, as the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints) saw them. A print paused right now also gets a **"Paused" tag**, and the tooltip and tables say "Paused since 5:42 PM" (or just "Paused" when it was already paused as the feed connected). The tooltip lists every pause with the total, e.g. `Paused: 12 min · 5:20 PM–5:32 PM`, and the tables add "paused 12 min" to the Bambu status.
 
 Below the chart, a table lists every flagged print. The full table view lists every print and reservation.
 
@@ -23,7 +24,7 @@ The **Filament usage** page (`/usage.html`) totals the filament each member used
 
 The **Admin** page (`/admin.html`) holds every button that makes PrintBuster ask Design Hub or Bambu for data, or recalculate saved usage:
 
-- **Data collection** shows when the server last collected and whether it could read each source. **Collect now** collects at once.
+- **Data collection** shows when the server last collected, whether it could read each source, and whether the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints) is connected. **Collect now** collects at once.
 - **Bambu sign-in** shows whether PrintBuster is signed in to Bambu, and takes the code when Bambu asks for one (see [Bambu sign-in codes](#bambu-sign-in-codes)).
 - **Import Bambu print history** reads the account's whole Bambu print history into the print log, back before PrintBuster started. See [Importing Bambu history](#importing-bambu-history).
 - **Import reservations** reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations).
@@ -125,6 +126,9 @@ Mount `.env` as shown rather than passing it with `--env-file`. `--env-file` kee
 | `PRINT_LOG_PATH` | Where the print log is kept. Default `data/print-log.jsonl`. |
 | `BAMBU_TASK_PAGE_SIZE`, `BAMBU_MAX_TASK_PAGES` | How many prints each request to Bambu's print history asks for (default 50), and how many pages one collection reads at most (default 10). |
 | `BAMBU_HISTORY_MAX_PAGES` | How many pages **Import Bambu history** on the Admin page reads at most. Default 400, so 20,000 prints at 50 a page. |
+| `BAMBU_LIVE` | `true` (default) watches the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints) on Bambu's MQTT broker, to show prints started from the SD card or sent over LAN. `false` turns it off. |
+| `BAMBU_LIVE_PUSHALL` | `true` (default) asks each printer for its full status once after subscribing (at most every 5 minutes). `false` only listens. |
+| `BAMBU_LIVE_LOG_PATH` | Where prints seen on the live feed are kept. Default `live-prints.jsonl` in the print log's folder. Its connected times (`live-prints.coverage.json`) and the printers' pauses (`printer-pauses.jsonl`) are kept next to it. |
 | `RESERVATION_LOG_PATH` | Where the saved reservations are kept. Default `data/reservations.json`. |
 | `USAGE_LOG_PATH` | Where the calculated usage is kept. Default `data/usage.json`. |
 | `ASSIGNMENT_LOG_PATH` | Where prints staff assigned to a member are kept. Default `data/assignments.json`. |
@@ -239,6 +243,8 @@ Each collection reads Bambu's printers and recent prints into the print log: the
 - **Collect now**, **Import Bambu history** and **Import reservations** on the Admin page;
 - signing in to Bambu with an emailed code, also on the Admin page.
 
+Separately, the server keeps one connection open to Bambu's MQTT broker for the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints).
+
 How it fits together:
 
 - **How the server knows a page is open.** While a page is visible, it holds a connection to `/api/events`. A page in a background tab or a minimized window lets go of it, and so stops counting as open.
@@ -275,6 +281,23 @@ Task status `2` means finished and `3` means failed or cancelled. While a job is
 
 **Material usage.** Each print carries its filament weight, length, and a per-filament breakdown (type and colour), shown with colour swatches in the hover tooltip and the table view. These are the slicer's estimates, not measured usage, so an aborted or failed print still shows its full estimate. Prints over `FLAG_WEIGHT_GRAMS` (default 200 g) or `FLAG_DURATION_HOURS` (default 12 h) are flagged, with a badge on the chart and a warning in the tooltip and table. Prints that use more than one filament are labelled **multi-colour** (two or more filaments) and, when the filament types differ, **multi-material** (e.g. PLA + PETG).
 
+### Printers' live feed (SD card and LAN prints)
+
+Bambu's print history only lists jobs sent through the cloud. Prints started from the printer's SD card or touch screen, "Print Again", and files sent over LAN never appear in it. A printer that is connected to the cloud still streams its live status to Bambu's MQTT broker, whatever started the print, so PrintBuster also listens to that:
+
+- It connects to `us.mqtt.bambulab.com:8883` (`cn.mqtt.bambulab.com` with `BAMBU_REGION=china`) over TLS, signed in as `u_<user id>` with the same Bambu access token the rest of PrintBuster uses. The user id comes from the token, or from `GET /v1/design-user-service/my/preference` once. It subscribes to `device/<serial>/report` for each printer the last collection listed, and asks each for its full status once (`pushall`; `BAMBU_LIVE_PUSHALL=false` turns that off). It sends nothing else. The broker, login and messages follow the community documentation ([OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md), [ha-bambulab](https://github.com/greghesp/ha-bambulab)).
+- A print is logged when the printer reports it preparing, printing or paused (`gcode_state`), and finished or failed when it reports `FINISH` or `FAILED`. Its title is the printer's job name (`subtask_name`), else the file name. Prints the printer reports as cloud prints (`print_type` `cloud`) are left to the cloud history.
+- They are saved to `data/live-prints.jsonl`, in the same format as the [print log](#print-log) plus `"source":"live"`, and drawn and matched like any other print. A live print that overlaps a cloud print on the same printer for at least half of the shorter of the two is taken to be the same print and left out; back-to-back prints overlap by seconds at most.
+- **No filament amount.** The live feed doesn't carry the slicer's estimate, so these prints have no grams tag. The tooltip says "Seen on the printer's live feed…", the table's Material column says "Not known (live feed)", and the usage page counts them as 0 g under "had no filament weight".
+- **Times.** A print seen starting is logged from that moment. One already running when PrintBuster connects uses the printer's own start time (`gcode_start_time`) when it is believable. While it runs, its expected finish is the printer's own time left (`mc_remaining_time`, in minutes) counted from when the printer reported it, and the tooltip shows "Time left … (printer's estimate)". While it is paused, the time left is counted from now, so the finish moves out until it resumes. Its finish is the moment the printer reported it. If the feed dropped before then, when it ended is unknown: a finished print shows "Finish not recorded", and a failed or cancelled one "end time not recorded".
+- **Paused prints.** A printer reporting `gcode_state` `PAUSE` marks the print running on it as paused, whether it came from the cloud history or the live feed: on the chart (above), in the tooltip and in the tables' Bambu status. "Since" is when the feed saw it pause. A cloud print's expected finish stays Bambu's slicer estimate. Nothing is shown paused while the feed is disconnected.
+- **Pause history.** Every pause is saved to `data/printer-pauses.jsonl`, one per printer pause: the printer, its start and end, and whether the feed saw each end (`startSeen`, `endSeen`). A pause already under way when the feed connected starts there; one the feed dropped during ends there, and the tooltip marks those times with ~ ("the pause may have been longer"). Pages attach each pause to the print that was running on its printer then (a printer runs one print at a time), so cloud prints get their pauses too, clipped to the print. Pauses a crash left open are ended at startup, where the feed was last seen connected. Paused time isn't used in the [filament usage rules](#filament-usage-rules).
+- **Coverage.** The times the feed was connected are saved to `data/live-prints.coverage.json` (extended every minute while it's up, so a crash loses at most a minute). When the feed wasn't connected for part of the day or range on screen, the waterfall and usage pages say **SD card and LAN prints may be missing**, with the times; for a day with no coverage at all, **SD card and LAN prints aren't known for this day**. Gaps under 2 minutes (a reconnect takes about 30 seconds, and a print under way is picked up when the feed is back) aren't listed. The Admin page shows when the record starts.
+- **Pages update at once** when a printer starts, finishes, pauses or resumes a print, without waiting for the next collection.
+- **Only while connected.** There is no history to read back; the [coverage](#printers-live-feed-sd-card-and-lan-prints) banner says when the feed wasn't connected. A print that starts and ends while PrintBuster is off or the feed is down is missed for good, and a printer in **LAN-only mode** never reaches the broker at all.
+- The connection stays open; it follows a new Bambu token and new printers after each collection, and retries after a failure (10 minutes after a rejected sign-in, sooner with a new token). The Admin page's **Data collection** shows whether it is connected, to how many printers, its last report and how many prints it has logged.
+- The server needs outbound TCP port 8883 to Bambu's broker.
+
 ### Matching rules
 
 Each print is compared with the reservations on the same printer. A Bambu printer is matched to an agenda "Model" in this order:
@@ -304,7 +327,7 @@ The usage page charges prints to reservation holders:
 - Any other print is charged to the reservation its middle falls in, else to the one on its printer that it overlaps most.
 - **A print more than half outside the member's reservation isn't counted.** "Outside" means outside that member's own reservations on that printer, each widened by the grace period, so back-to-back bookings by the same person count as one block. This rule wins over the first one: a print started in Amy's slot that mostly runs in Ben's is Amy's, and isn't counted. It is listed under the member as "Not counted", and nobody else is charged. Exactly half outside still counts.
 - **Every print in a reservation is tracked against it.** Expanding a member lists each reservation with its prints, grams and not-counted prints, including reservations with no prints.
-- **A cancelled or failed print** counts in proportion to how long it ran, interpolated linearly: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. Each filament in the breakdown is scaled the same way. For example, a 120 g print cancelled 45 minutes into a 3-hour estimate counts 30 g. The share is added to the member's filament for that reservation, in the range and the all-time totals, like any other counted print (so a cancelled print more than half outside the member's reservation isn't counted either). The time printed runs from Bambu's start time to its end time, to the second, using Bambu's unrounded estimate. A print cancelled within a minute is still drawn a minute long but charged only for the seconds it ran. Time spent paused counts as printing, because Bambu doesn't report pauses. If Bambu gave no time estimate, or recorded no end time for the cancelled print, the full weight counts.
+- **A cancelled or failed print** counts in proportion to how long it ran, interpolated linearly: grams = estimated grams × (time printed ÷ estimated print time), capped at the full estimate. Each filament in the breakdown is scaled the same way. For example, a 120 g print cancelled 45 minutes into a 3-hour estimate counts 30 g. The share is added to the member's filament for that reservation, in the range and the all-time totals, like any other counted print (so a cancelled print more than half outside the member's reservation isn't counted either). The time printed runs from Bambu's start time to its end time, to the second, using Bambu's unrounded estimate. A print cancelled within a minute is still drawn a minute long but charged only for the seconds it ran. Time spent paused counts as printing: Bambu's print history doesn't record pauses, and the pauses the live feed saves are shown but not used here. If Bambu gave no time estimate, or recorded no end time for the cancelled print, the full weight counts.
 - **A print still running** counts the share of its estimated time that has elapsed.
 - The waterfall's tag on a cancelled or failed print shows the same estimate (see the grams tag above).
 - A print belongs to the date range its start time falls in, so adjacent ranges never count it twice.
@@ -352,7 +375,8 @@ Each collection only reads the last couple of days of Bambu's print history. To 
 
 ## Limitations
 
-- **Only cloud prints are visible.** Prints sent over LAN-only mode or started from an SD card never reach the Bambu cloud. A reservation used that way shows as "no print recorded", not as a violation.
+- **SD card and LAN prints come only from the live feed.** Bambu's print history leaves them out. PrintBuster sees them on the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints) while it is connected, with no filament amount. Those that run while it is off are missed, and a printer in LAN-only mode is never seen. A reservation used that way shows as "no print recorded", not as a violation.
+- **The live feed is untested against Bambu's broker.** It follows the community documentation, and was tested against a local MQTT broker and simulated printer reports. Check the Admin page after starting a print from the SD card.
 - **Untested against the live sites.** Neither site could be reached from the environment this was built in. The Design Hub side is based on the Studio Manager source and the userscript's parsing. The Bambu side is based on the community documentation above. The automated tests run both clients against simulations of that behavior.
 - **The Bambu API may change.** Because it is unofficial, Bambu can change it at any time. If Bambu's Cloudflare protection blocks the login, the app explains how to use `BAMBU_ACCESS_TOKEN` instead.
 - **Very long prints can be missed.** Prints that started more than 48 hours before the selected day are not fetched.
@@ -375,6 +399,7 @@ src/guest.js       The guest view's data: the waterfall with names, titles and i
 src/material.js    How much filament a print used, prorating cancelled and running prints
 src/designhub.js   Studio Manager login + agenda parser
 src/bambu.js       Bambu cloud client + task normalization
+src/bambulive.js   The printers' live MQTT feed: logs SD card and LAN prints the cloud history leaves out
 src/compare.js     Printer mapping and reservation matching
 src/usage.js       Filament usage per reservation holder (attribution rules)
 src/collector.js   Server-side collection schedule: 2 min with a page open, 15 min otherwise

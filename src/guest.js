@@ -20,7 +20,8 @@ const PRINT_KEYS = [
   'deviceName', 'deviceModel', 'start', 'end', 'status', 'rawStatus', 'estimated', 'finishUnknown', 'overdue',
   'estimateMinutes', 'estimateSeconds', 'ranSeconds', 'weightGrams', 'lengthMeters', 'filaments', 'match',
   'uncoveredMinutes', 'noReservationReason', 'insideShare', 'uncovered', 'unmappedPrinter', 'overWeight', 'overTime',
-  'large', 'materialTypes', 'cancelledUse', 'multiColor', 'multiMaterial',
+  'large', 'materialTypes', 'cancelledUse', 'multiColor', 'multiMaterial', 'source',
+  'paused', 'pausedSince', 'remainingMinutes', 'pauses', 'pausedMinutes',
 ];
 const SUMMARY_KEYS = [
   'reservations', 'prints', 'reserved', 'partial', 'unreserved', 'reservationsWithoutPrint',
@@ -58,6 +59,9 @@ export function guestComparison(result) {
     flagDurationHours: result.flagDurationHours,
     printsAvailable: Boolean(result.printsAvailable),
     printGaps: (result.printGaps || []).map((g) => pick(g, ['start', 'end'])),
+    liveFeed: result.liveFeed
+      ? { since: result.liveFeed.since, gaps: result.liveFeed.gaps.map((g) => pick(g, ['start', 'end'])) }
+      : null,
     collector: result.collector ? pick(result.collector, ['lastRunAt', 'activeMinutes', 'idleMinutes', 'viewers']) : null,
     rows: result.rows.map((row) => ({
       key: rowId(row.key),

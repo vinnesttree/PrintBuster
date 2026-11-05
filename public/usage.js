@@ -130,9 +130,18 @@ function renderBanners() {
       `Usage comes from PrintBuster's print log${since ? `, which starts ${fmtDateTime(since)}` : ''}. Import Bambu history on the Admin page to add older prints. `
       + `Prints in these times are missing: ${shown.join('; ')}${more}.`));
   }
+  // Prints started from the SD card or sent over LAN come only from the
+  // printers' live feed; say when it wasn't connected.
+  if (!d.demo && d.liveFeed?.gaps.length) {
+    const shown = d.liveFeed.gaps.slice(0, 3).map((g) => `${fmtDateTime(g.start)} \u2013 ${fmtDateTime(g.end)}`);
+    const more = d.liveFeed.gaps.length > 3 ? ` and ${d.liveFeed.gaps.length - 3} more` : '';
+    list.push(banner('icon-info', 'i', 'SD card and LAN prints may be missing',
+      `They come only from the printers\u2019 live feed, which wasn\u2019t connected ${shown.join('; ')}${more}.`
+      + (d.liveFeed.since ? ` Its record starts ${fmtDateTime(d.liveFeed.since)}.` : ' It hasn\u2019t connected yet.')));
+  }
   if (d.totals?.printsWithoutWeight) {
     list.push(banner('icon-info', 'i', `${d.totals.printsWithoutWeight} print(s) had no filament weight`,
-      'Bambu did not report a weight for them, so they count as 0 g.'));
+      'Bambu did not report a weight for them, so they count as 0 g. Prints seen only on the printers\u2019 live feed (started from the SD card or sent over LAN) never have one.'));
   }
   $('#banners').replaceChildren(...list);
 }

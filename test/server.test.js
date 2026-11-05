@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,6 +68,17 @@ describe('config', () => {
     assert.equal(loadConfig({ BAMBU_EMAIL: 'a', BAMBU_PASSWORD: 'b' }, []).demo, false);
     assert.equal(loadConfig({ DEMO_MODE: 'false' }, []).demo, false);
     assert.equal(loadConfig({ BAMBU_ACCESS_TOKEN: 't' }, ['node', 'x', '--demo']).demo, true);
+  });
+
+  it('watches the live feed by default, logging next to the print log', () => {
+    const c = loadConfig({ PRINT_LOG_PATH: '/srv/pb/print-log.jsonl' }, []);
+    assert.equal(c.bambu.live, true);
+    assert.equal(c.bambu.livePushall, true);
+    assert.equal(c.liveLogPath, '/srv/pb/live-prints.jsonl');
+    const off = loadConfig({ BAMBU_LIVE: 'false', BAMBU_LIVE_PUSHALL: 'no', BAMBU_LIVE_LOG_PATH: '/x/live.jsonl' }, []);
+    assert.equal(off.bambu.live, false);
+    assert.equal(off.bambu.livePushall, false);
+    assert.equal(off.liveLogPath, '/x/live.jsonl');
   });
 
   it('loads .env without overriding real environment variables', async () => {
@@ -165,6 +177,67 @@ describe('live mode', () => {
       },
     });
   }
+
+  it('shows a print from the printers’ live feed that Bambu’s history lacks', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
+    const up = upstream('token');
+    let clock = Date.parse('2026-10-27T20:50:00Z');
+    // Stands in for the MQTT broker.
+    const clients = [];
+    const mqttConnect = (url, opts) => {
+      const c = Object.assign(new EventEmitter(), {
+        url, opts, subs: [], subscribe(t, o, cb) { this.subs.push(t); cb?.(null); }, publish() {}, end() {},
+      });
+      clients.push(c);
+      return c;
+    };
+    const api = await start({ ...env(dir), GUEST_VIEW: 'true' }, { fetch: up.fetch, now: () => clock, mqttConnect });
+    // createApp never connects by itself; main() starts the feed.
+    assert.equal(clients.length, 0);
+    const live = api.app.locals.live;
+    await live.start();
+    const broker = clients[0];
+    assert.equal(broker.opts.username, 'u_1234567');
+    broker.emit('connect');
+    assert.deepEqual(broker.subs, ['device/D-ADA/report']);
+    const report = async (print) => {
+      broker.emit('message', 'device/D-ADA/report', Buffer.from(JSON.stringify({ print })));
+      await api.app.locals.service.liveLog.queue;
+    };
+    await report({ gcode_state: 'IDLE', print_type: 'idle' });
+    clock = Date.parse('2026-10-27T21:00:00Z'); // 4:00 pm
+    await report({ gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'SD job', mc_remaining_time: 60 });
+    clock = Date.parse('2026-10-27T22:00:00Z');
+    await report({ gcode_state: 'FINISH' });
+    clock = NOW;
+
+    const data = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const sd = data.prints.find((p) => p.source === 'live');
+    assert.ok(sd, 'the live print is on the waterfall');
+    assert.equal(sd.title, 'SD job');
+    assert.equal(sd.deviceName, 'Ada');
+    assert.equal(sd.status, 'finished');
+    assert.equal(sd.start, '2026-10-27T21:00:00.000Z');
+    assert.equal(sd.end, '2026-10-27T22:00:00.000Z');
+    assert.equal(sd.match, 'unreserved');
+    assert.equal(sd.weightGrams, null);
+    // The cloud prints are unchanged.
+    assert.deepEqual(data.prints.filter((p) => p.source !== 'live').map((p) => p.id), ['bb-1', 'bb-2']);
+
+    const guest = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
+    const guestSd = guest.prints.find((p) => p.source === 'live');
+    assert.equal(guestSd.title, 'Print');
+
+    const usage = await (await api.get('/api/usage?from=2026-10-27&to=2026-10-27')).json();
+    const listed = usage.unattributed.list.find((p) => p.id === sd.id);
+    assert.equal(listed.usedGrams, null);
+
+    const admin = await (await api.get('/api/admin/status')).json();
+    assert.equal(admin.live.connected, true);
+    assert.equal(admin.live.printers, 1);
+    assert.equal(admin.live.log.prints, 1);
+    live.stop();
+  });
 
   it('compares live data end to end, including the emailed-code sign-in', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-live-'));
@@ -865,6 +938,91 @@ describe('server-side collection and live updates', () => {
     }
     assert.fail(`viewers never reached ${n}`);
   }
+
+  it('shows a paused print, cloud or not, and times a live print by the printer', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-pause-'));
+    const up = createMockUpstream({
+      bambu: {
+        devices: [{ dev_id: 'D-ADA', name: 'Ada', dev_product_name: 'X1 Carbon' }, { dev_id: 'D-OHM', name: 'Ohm', dev_product_name: 'P1S' }],
+        // A cloud print still running: Bambu reports its end as its start.
+        tasks: [task(5, 'D-ADA', '2026-10-27T17:30', null, { status: 1, costTime: 7200 })],
+      },
+    });
+    let clock = Date.parse('2026-10-27T22:45:00Z');
+    const clients = [];
+    const mqttConnect = (url, opts) => {
+      const c = Object.assign(new EventEmitter(), { opts, subscribe(t, o, cb) { cb?.(null); }, publish() {}, end() {} });
+      clients.push(c);
+      return c;
+    };
+    const api = await start({
+      DEMO_MODE: 'false', DESIGNHUB_BASE_URL: 'https://hub.test', DESIGNHUB_USERNAME: 'kiosk', DESIGNHUB_PASSWORD: 'secret',
+      BAMBU_ACCESS_TOKEN: 'env-token', PRINT_LOG_PATH: path.join(dir, 'print-log.jsonl'), GUEST_VIEW: 'true',
+    }, { fetch: up.fetch, now: () => clock, mqttConnect });
+    await api.app.locals.live.start();
+    const broker = clients[0];
+    broker.emit('connect');
+    const report = async (serial, print) => {
+      broker.emit('message', `device/${serial}/report`, Buffer.from(JSON.stringify({ print })));
+      await api.app.locals.service.liveLog.queue;
+    };
+    await report('D-ADA', { gcode_state: 'RUNNING', print_type: 'cloud', subtask_name: 'Job 5', mc_remaining_time: 100 });
+    await report('D-OHM', { gcode_state: 'IDLE' });
+    await report('D-OHM', { gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'SD job', mc_remaining_time: 50 });
+
+    const page = new AbortController();
+    const next = eventReader(await fetch(`${api.base}/api/events`, { headers: { Cookie: api.cookie }, signal: page.signal }));
+    assert.equal((await next()).event, 'hello');
+    await viewersSoon(api, 1);
+
+    // Pausing is announced to open pages without waiting for a collection.
+    clock += 60_000;
+    const pausedAt = new Date(clock).toISOString();
+    await report('D-ADA', { gcode_state: 'PAUSE' });
+    assert.equal((await next()).event, 'update');
+    page.abort();
+
+    const data = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const cloud = data.prints.find((p) => p.id === 'bb-5');
+    assert.equal(cloud.status, 'running');
+    assert.equal(cloud.paused, true);
+    assert.equal(cloud.pausedSince, pausedAt);
+    const sd = data.prints.find((p) => p.source === 'live');
+    assert.equal(sd.paused, false);
+    assert.equal(sd.remainingMinutes, 50);
+    // Reported at 22:45 with 50 minutes left.
+    assert.equal(sd.end, '2026-10-27T23:35:00.000Z');
+
+    const guest = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
+    assert.equal(guest.prints.find((p) => p.status === 'running' && p.paused).pausedSince, pausedAt);
+
+    // Resumed: the pause stays in the print's history. (Within 10 minutes of
+    // the last collection, so the cloud print still counts as running.)
+    clock += 8 * 60_000;
+    await report('D-ADA', { gcode_state: 'RUNNING' });
+    const later = await (await api.get('/api/compare?date=2026-10-27')).json();
+    const resumed = later.prints.find((p) => p.id === 'bb-5');
+    assert.equal(resumed.paused, false);
+    assert.deepEqual(resumed.pauses, [{ start: pausedAt, end: new Date(clock).toISOString(), startSeen: true, endSeen: true, ongoing: false }]);
+    assert.equal(resumed.pausedMinutes, 8);
+    // The feed connected at 22:45: SD card and LAN prints before then may be missing.
+    assert.equal(later.liveFeed.since, '2026-10-27T22:45:00.000Z');
+    assert.deepEqual(later.liveFeed.gaps, [{ start: '2026-10-27T05:00:00.000Z', end: '2026-10-27T22:45:00.000Z' }]);
+    const guestLater = await (await fetch(`${api.base}/api/guest/compare?date=2026-10-27`)).json();
+    assert.equal(guestLater.prints.find((p) => p.pausedMinutes).pausedMinutes, 8);
+    assert.deepEqual(guestLater.liveFeed.gaps, later.liveFeed.gaps);
+    const usage = await (await api.get('/api/usage?from=2026-10-27&to=2026-10-27')).json();
+    assert.deepEqual(usage.liveFeed.gaps, later.liveFeed.gaps);
+
+    // Saved for later: the pause log and the feed's connected times.
+    api.app.locals.live.stop();
+    await api.app.locals.service.pauseLog.queue;
+    await api.app.locals.live.feedCoverage.queue;
+    const pauses = (await fs.readFile(path.join(dir, 'printer-pauses.jsonl'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(pauses.at(-1).endSeen, true);
+    const coverage = JSON.parse(await fs.readFile(path.join(dir, 'live-prints.coverage.json'), 'utf8'));
+    assert.deepEqual(coverage.intervals, [['2026-10-27T22:45:00.000Z', new Date(clock).toISOString()]]);
+  });
 
   it('counts open pages and tells them when new data is in', async () => {
     let clock = NOW;

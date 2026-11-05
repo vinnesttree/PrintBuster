@@ -9,7 +9,7 @@ import { writeAtomic } from './files.js';
 // actually observed, so gaps (before the log began, a read cut short) are known.
 
 // The task fields needed to redraw and re-check a print later.
-const FIELDS = ['startTime', 'endTime', 'status', 'deviceId', 'deviceName', 'deviceModel', 'title', 'designTitle', 'plateName', 'plateIndex', 'costTime', 'weight', 'length', 'amsDetailMapping'];
+export const FIELDS = ['startTime', 'endTime', 'status', 'deviceId', 'deviceName', 'deviceModel', 'title', 'designTitle', 'plateName', 'plateIndex', 'costTime', 'weight', 'length', 'amsDetailMapping'];
 
 // Two successful fetches this close together are assumed to have seen
 // everything in between. Must stay below how far back each collection reads.
@@ -30,8 +30,14 @@ export function mergeIntervals(intervals) {
 }
 
 export class PrintLog {
-  constructor(file) {
+  // `coverage: false` keeps prints only, with no record of which spans were
+  // observed: for the live MQTT log, whose prints are seen one at a time and
+  // say nothing about what happened while it wasn't connected. `fields` are
+  // the task fields kept.
+  constructor(file, { coverage = true, fields = FIELDS } = {}) {
     this.file = file;
+    this.trackCoverage = coverage;
+    this.fields = fields;
     this.coverageFile = `${file.replace(/\.jsonl$/, '')}.coverage.json`;
     this.records = new Map();
     this.intervals = [];
@@ -70,11 +76,13 @@ export class PrintLog {
     this.needsNewline = text.length > 0 && !text.endsWith('\n');
     if (unreadable) console.warn(`Print log: ignored ${unreadable} unreadable line(s) in ${this.file}`);
 
-    try {
-      const saved = JSON.parse(await fs.readFile(this.coverageFile, 'utf8'));
-      this.intervals = mergeIntervals((saved.intervals || []).map(([s, e]) => [Date.parse(s), Date.parse(e)]));
-    } catch (err) {
-      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') console.warn(`Print log: ignoring unreadable ${this.coverageFile} (${err.message})`);
+    if (this.trackCoverage) {
+      try {
+        const saved = JSON.parse(await fs.readFile(this.coverageFile, 'utf8'));
+        this.intervals = mergeIntervals((saved.intervals || []).map(([s, e]) => [Date.parse(s), Date.parse(e)]));
+      } catch (err) {
+        if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') console.warn(`Print log: ignoring unreadable ${this.coverageFile} (${err.message})`);
+      }
     }
 
     if (this.lineCount > 1000 && this.lineCount > 2 * this.records.size) await this.compact();
@@ -93,7 +101,7 @@ export class PrintLog {
       const prev = this.records.get(id);
       const merged = { ...task, deviceName: names.get(task.deviceId) || task.deviceName || prev?.deviceName };
       const rec = { id };
-      for (const f of FIELDS) {
+      for (const f of this.fields) {
         if (merged[f] !== undefined && merged[f] !== null && merged[f] !== '') rec[f] = merged[f];
       }
       if (prev && JSON.stringify(withoutRecordedAt(prev)) === JSON.stringify(rec)) continue;
@@ -101,7 +109,7 @@ export class PrintLog {
       this.records.set(id, stored);
       this.pendingLines.push(JSON.stringify(stored));
     }
-    this.addCoverage(earliest, fetchedAt);
+    if (this.trackCoverage) this.addCoverage(earliest, fetchedAt);
     return this.persist();
   }
 
@@ -123,7 +131,9 @@ export class PrintLog {
           this.needsNewline = false;
           this.lineCount += lines.length;
         }
-        await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`);
+        if (this.trackCoverage) {
+          await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`);
+        }
         this.writeError = null;
       } catch (err) {
         // Keep unsaved lines in memory and try again with the next fetch.
