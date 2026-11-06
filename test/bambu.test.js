@@ -36,6 +36,14 @@ describe('normalizeTask', () => {
     assert.equal(p.weightGrams, 12.3);
   });
 
+  it('titles a print by its model name, else its project name', () => {
+    const t = (extra) => normalizeTask(task(9, 'DEV1', '2026-10-27T09:00', '2026-10-27T10:30', extra), names, NOW).title;
+    assert.equal(t({ title: 'Untitled', designTitle: 'Articulated Dragon' }), 'Articulated Dragon');
+    assert.equal(t({ title: 'Bracket', designTitle: '' }), 'Bracket');
+    assert.equal(t({ title: 'Bracket', designTitle: '  ' }), 'Bracket');
+    assert.equal(t({ title: '', designTitle: '' }), 'Untitled print');
+  });
+
   it('treats endTime == startTime as still printing and uses the slicer estimate', () => {
     const raw = task(8, 'DEV1', '2026-10-27T14:00', null, { status: 1, costTime: 7200 });
     const p = normalizeTask(raw, names, NOW);
