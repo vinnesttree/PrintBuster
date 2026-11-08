@@ -98,6 +98,24 @@ describe('config', () => {
     }
   });
 
+  it('warns when .env can be read by other users, since it holds credentials', { skip: process.platform === 'win32' }, async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-env-'));
+    const file = path.join(dir, '.env');
+    await fs.writeFile(file, 'PB_TEST_PERM=1\n', { mode: 0o644 });
+    await fs.chmod(file, 0o644);
+    const warn = t.mock.method(console, 'warn', () => {});
+    try {
+      loadEnvFile(file);
+      assert.equal(warn.mock.callCount(), 1);
+      assert.match(warn.mock.calls[0].arguments[0], /can be read by other users.*chmod 600/);
+      await fs.chmod(file, 0o600);
+      loadEnvFile(file);
+      assert.equal(warn.mock.callCount(), 1, 'no warning once it is private');
+    } finally {
+      delete process.env.PB_TEST_PERM;
+    }
+  });
+
   it('explains a .env folder left behind by a Docker mount', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-env-'));
     await fs.mkdir(path.join(dir, '.env'));

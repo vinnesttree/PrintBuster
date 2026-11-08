@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { redactText } from '../src/auth.js';
 import { SourceError } from '../src/errors.js';
 import { pushUrl, sourceHealth, staleAfterMs, UptimeKumaPusher } from '../src/uptime.js';
 
@@ -66,6 +67,15 @@ describe('Uptime Kuma push', () => {
     const byPath = Object.fromEntries(kuma.calls.map((u) => [u.pathname, Object.fromEntries(u.searchParams)]));
     assert.deepEqual(byPath['/api/push/hub'], { status: 'down', msg: 'Design Hub rejected the login. Check DESIGNHUB_PASSWORD.' });
     assert.deepEqual(byPath['/api/push/bambu'], { status: 'up', msg: 'OK', ping: '1200' });
+  });
+
+  it('removes credentials from the message before it goes in the URL', async () => {
+    const kuma = fakeKuma();
+    const pusher = new UptimeKumaPusher({ bambu: 'https://kuma.test/api/push/bambu' }, {
+      fetch: kuma.fetch, redact: (text) => redactText(text, ['bambu-token-81d2e4b6']),
+    });
+    await pusher.push(collected({ ok: true }, down('bambu_auth', 'Bambu said: bad token bambu-token-81d2e4b6')));
+    assert.equal(kuma.calls[0].searchParams.get('msg'), 'Bambu said: bad token [redacted]');
   });
 
   it('pushes only the sources that have a URL', async () => {

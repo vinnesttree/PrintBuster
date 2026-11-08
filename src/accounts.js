@@ -295,15 +295,27 @@ export class SessionStore extends JsonFileStore {
   }
 }
 
-// Failed sign-ins per username and per address, in a sliding window.
-// Over the limit, sign-in is refused (even with the right password) until
-// the window has passed.
+// Failed sign-ins in a sliding window, per username from one address, per
+// username from anywhere, and per address. Over a limit, sign-in is refused
+// (even with the right password) until the window has passed. The limit per
+// username from anywhere is much higher, so someone else failing to sign in
+// as you from their own addresses can't easily lock you out.
+export const MAX_LIMITER_KEYS = 10000;
+
 export class LoginLimiter {
-  constructor({ now = () => Date.now(), windowMs = 15 * 60 * 1000, perUser = 5, perAddress = 20 } = {}) {
+  constructor({
+    now = () => Date.now(), windowMs = 15 * 60 * 1000, perUser = 5, perUserTotal = 100, perAddress = 20,
+    maxKeys = MAX_LIMITER_KEYS,
+  } = {}) {
     this.now = now;
     this.windowMs = windowMs;
-    this.limits = { user: perUser, address: perAddress };
+    this.limits = { user: perUser, userTotal: perUserTotal, address: perAddress };
+    this.maxKeys = maxKeys;
     this.failures = new Map();
+  }
+
+  keys({ user, address }) {
+    return [['user', `ua:${user}\n${address}`], ['userTotal', `u:${user}`], ['address', `a:${address}`]];
   }
 
   recent(key) {
@@ -315,9 +327,9 @@ export class LoginLimiter {
   }
 
   // Seconds until a sign-in may be tried again, or 0 when it may now.
-  retryAfter({ user, address }) {
+  retryAfter(who) {
     let wait = 0;
-    for (const [kind, key] of [['user', `u:${user}`], ['address', `a:${address}`]]) {
+    for (const [kind, key] of this.keys(who)) {
       const list = this.recent(key);
       if (list.length >= this.limits[kind]) {
         wait = Math.max(wait, list[list.length - this.limits[kind]] + this.windowMs - this.now());
@@ -326,13 +338,42 @@ export class LoginLimiter {
     return Math.ceil(wait / 1000);
   }
 
-  fail({ user, address }) {
-    for (const key of [`u:${user}`, `a:${address}`]) this.failures.set(key, [...this.recent(key), this.now()]);
-    // Keeps the map from growing without bound under a spray of usernames.
-    if (this.failures.size > 10000) for (const key of this.failures.keys()) this.recent(key);
+  fail(who, at = this.now()) {
+    for (const [, key] of this.keys(who)) {
+      const list = [...this.recent(key), at];
+      // Re-added last, so the map's order is least recently failed first.
+      this.failures.delete(key);
+      this.failures.set(key, list);
+    }
+    // Keeps the map from growing without bound under a spray of usernames
+    // or addresses: the keys that failed longest ago go first.
+    while (this.failures.size > this.maxKeys) this.failures.delete(this.failures.keys().next().value);
   }
 
-  succeed({ user }) {
-    this.failures.delete(`u:${user}`);
+  // Starts a sign-in attempt: { wait } in seconds when it is refused, else
+  // { attempt }. The attempt counts as failed until succeed() says
+  // otherwise, so requests sent all at once can't each get through before
+  // the others are counted.
+  begin(who) {
+    const wait = this.retryAfter(who);
+    if (wait) return { wait };
+    const attempt = this.now();
+    this.fail(who, attempt);
+    return { attempt };
+  }
+
+  // The attempt was right: it no longer counts, and neither do earlier
+  // failures from this address for this username.
+  succeed(who, attempt) {
+    const [[, pair], ...others] = this.keys(who);
+    this.failures.delete(pair);
+    if (attempt === undefined) return;
+    for (const [, key] of others) {
+      const list = this.failures.get(key);
+      const i = list ? list.indexOf(attempt) : -1;
+      if (i < 0) continue;
+      list.splice(i, 1);
+      if (!list.length) this.failures.delete(key);
+    }
   }
 }

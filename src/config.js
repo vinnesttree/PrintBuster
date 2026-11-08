@@ -25,6 +25,12 @@ export function loadEnvFile(file = path.join(ROOT_DIR, '.env')) {
   if (stat.isDirectory()) {
     throw new Error(`${file} is a folder, not a file. Docker creates one when it mounts a .env that does not exist yet: delete that folder, create .env from .env.example, and start again.`);
   }
+  // It holds the Design Hub and Bambu credentials, which can read every
+  // member's reservations and prints.
+  if (process.platform !== 'win32' && (stat.mode & 0o077)) {
+    console.warn(`Warning: ${file} can be read by other users of this computer (mode ${(stat.mode & 0o777).toString(8)}). `
+      + `It holds credentials: run "chmod 600 ${file}".`);
+  }
   process.loadEnvFile(file);
   return true;
 }

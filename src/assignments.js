@@ -8,6 +8,13 @@ import { SourceError } from './errors.js';
 export const MAX_NAME_LENGTH = 100;
 const PRINT_ID = /^[\w.:-]{1,100}$/;
 
+// The print id as text, or a bad_print error.
+export function checkPrintId(printId) {
+  const id = String(printId ?? '');
+  if (!PRINT_ID.test(id)) throw new SourceError('That is not a print id.', { code: 'bad_print' });
+  return id;
+}
+
 export class AssignmentLog extends JsonFileStore {
   constructor(file) {
     super(file, 'print assignments');
@@ -25,10 +32,10 @@ export class AssignmentLog extends JsonFileStore {
     return this.prints.get(String(id));
   }
 
-  // Charges a print to `name`, or removes its assignment when `name` is empty.
-  set(printId, name, { at }) {
-    const id = String(printId ?? '');
-    if (!PRINT_ID.test(id)) throw new SourceError('That is not a print id.', { code: 'bad_print' });
+  // Charges a print to `name`, or removes its assignment when `name` is
+  // empty. `by` is the account that made the change, kept for admins.
+  set(printId, name, { at, by = null }) {
+    const id = checkPrintId(printId);
     if (name != null && typeof name !== 'string') throw new SourceError('The name must be text.', { code: 'bad_name' });
     const clean = (name || '').replace(/\s+/g, ' ').trim();
     if (clean.length > MAX_NAME_LENGTH) {
@@ -38,7 +45,7 @@ export class AssignmentLog extends JsonFileStore {
       if (!this.prints.delete(id)) return this.queue;
     } else {
       if (this.prints.get(id)?.name === clean) return this.queue;
-      this.prints.set(id, { name: clean, at: new Date(at).toISOString() });
+      this.prints.set(id, { name: clean, at: new Date(at).toISOString(), ...(by ? { by } : {}) });
     }
     return this.persist(() => ({ prints: Object.fromEntries([...this.prints.entries()].sort(([a], [b]) => a.localeCompare(b))) }));
   }

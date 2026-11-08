@@ -37,20 +37,44 @@ export const clearedCookie = (req, setting) => sessionCookie(req, setting, '', 0
 // What a page may know about who is signed in.
 export const sessionUser = (account) => (account ? { username: account.username, role: account.role } : null);
 
+// Each way a credential can be written: as given, URL-encoded, and
+// URL-decoded (a cookie may be configured in one form and echoed in the
+// other). Values under 6 characters are skipped, since they would also
+// match ordinary text.
+function secretForms(secrets) {
+  const forms = new Set();
+  for (const secret of new Set(secrets)) {
+    if (typeof secret !== 'string') continue;
+    let decoded = secret;
+    try {
+      decoded = decodeURIComponent(secret);
+    } catch {
+      // Not URL-encoded.
+    }
+    for (const value of [secret, decoded]) {
+      if (value.length < 6) continue;
+      forms.add(value);
+      forms.add(encodeURIComponent(value));
+    }
+  }
+  // Longest first, so a form is never left half replaced by a shorter one.
+  return [...forms].sort((a, b) => b.length - a.length);
+}
+
+const replaceAll = (text, forms) => forms.reduce((out, form) => out.split(form).join('[redacted]'), text);
+
+// Replaces every credential the server holds with "[redacted]" in plain
+// text, such as a message sent to an uptime monitor.
+export function redactText(text, secrets) {
+  return replaceAll(String(text), secretForms(secrets));
+}
+
 // Replaces every credential the server holds with "[redacted]" in a JSON
 // text. Credentials are only for collecting data; this makes sure that one
 // echoed back in an upstream error message, say, never reaches a browser.
-// Values under 6 characters are skipped, since they would also match
-// ordinary text.
 export function redactSecrets(text, secrets) {
-  let out = text;
-  for (const secret of new Set(secrets)) {
-    if (typeof secret !== 'string' || secret.length < 6) continue;
-    // As it appears inside a JSON string, and inside a URL in one.
-    for (const form of new Set([JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])) {
-      out = out.split(form).join('[redacted]');
-    }
-  }
+  // As each form appears inside a JSON string.
+  const out = replaceAll(text, secretForms(secrets).map((form) => JSON.stringify(form).slice(1, -1)));
   if (out === text) return text;
   try {
     JSON.parse(out);
