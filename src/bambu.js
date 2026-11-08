@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { SourceError } from './errors.js';
+import { ensureDir } from './files.js';
 
 // Endpoints and headers follow the community-documented Bambu cloud API
 // (OpenBambuAPI, ha-bambulab). China accounts use the .cn hosts.
@@ -192,7 +192,7 @@ export class BambuClient {
       ? new Date(this.now() + Number(expiresInSeconds) * 1000).toISOString()
       : null;
     try {
-      await fs.mkdir(path.dirname(this.cfg.tokenCachePath), { recursive: true });
+      await ensureDir(this.cfg.tokenCachePath);
       await fs.writeFile(
         this.cfg.tokenCachePath,
         JSON.stringify({ email: this.cfg.email, accessToken: token, savedAt: new Date(this.now()).toISOString(), expiresAt }, null, 2),

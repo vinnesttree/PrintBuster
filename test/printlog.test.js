@@ -129,3 +129,33 @@ describe('PrintLog', () => {
     assert.deepEqual(kept.map((l) => [l.id, l.weight]), [['0', 1197], ['1', 1198], ['2', 1199]]);
   });
 });
+
+// Print titles and plate names often hold members' names.
+describe('PrintLog file permissions', { skip: process.platform === 'win32' }, () => {
+  const mode = async (file) => (await fs.stat(file)).mode & 0o777;
+
+  it('creates the log, its coverage and its folder readable only by the owner', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-log-'));
+    const file = path.join(dir, 'nested', 'print-log.jsonl');
+    const log = new PrintLog(file);
+    await log.load();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    assert.equal(await mode(file), 0o600);
+    assert.equal(await mode(log.coverageFile), 0o600);
+    assert.equal(await mode(path.dirname(file)), 0o700);
+    await log.compact();
+    assert.equal(await mode(file), 0o600);
+  });
+
+  it('makes logs written before this private when loading them', async () => {
+    const { file, log } = await tempLog();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    await fs.chmod(file, 0o644);
+    await fs.chmod(log.coverageFile, 0o644);
+    const again = new PrintLog(file);
+    await again.load();
+    assert.equal(await mode(file), 0o600);
+    assert.equal(await mode(again.coverageFile), 0o600);
+    assert.equal(again.records.size, 1);
+  });
+});

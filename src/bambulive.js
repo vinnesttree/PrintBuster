@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import mqtt from 'mqtt';
-import { writeAtomic } from './files.js';
+import { ensureDir, PRIVATE_FILE_MODE, restrictFile, writeAtomic } from './files.js';
 import { FIELDS, mergeIntervals } from './printlog.js';
 
 // Bambu's cloud print history (/my/tasks) only lists jobs sent through the
@@ -103,6 +103,7 @@ export class FeedCoverage {
   }
 
   async load() {
+    await restrictFile(this.file);
     try {
       const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
       this.intervals = mergeIntervals((saved.intervals || []).map(([s, e]) => [Date.parse(s), Date.parse(e)]));
@@ -117,7 +118,8 @@ export class FeedCoverage {
     this.intervals = mergeIntervals([...this.intervals, [start, end]]);
     this.queue = this.queue.then(async () => {
       try {
-        await writeAtomic(this.file, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`);
+        await ensureDir(this.file);
+        await writeAtomic(this.file, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`, { mode: PRIVATE_FILE_MODE });
         this.writeError = null;
       } catch (err) {
         if (this.writeError !== err.message) console.error(`Could not save the live feed coverage: ${err.message}`);

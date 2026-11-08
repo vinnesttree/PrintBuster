@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
-import { writeAtomic } from './files.js';
+import {
+  ensureDir, PRIVATE_FILE_MODE, restrictFile, writeAtomic,
+} from './files.js';
 
 // Every Bambu task PrintBuster reads is kept here, so pages never ask Bambu
 // themselves and prints stay available if Bambu is unreachable. One JSON
@@ -60,6 +61,11 @@ export class PrintLog {
         throw new Error(`Cannot read the print log ${this.file}: ${err.message}`);
       }
     }
+    // Task titles and plate names often hold members' names. Logs written
+    // before files were made private keep their old permissions otherwise.
+    await restrictFile(this.file);
+    if (this.trackCoverage) await restrictFile(this.coverageFile);
+
     let unreadable = 0;
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
@@ -122,17 +128,17 @@ export class PrintLog {
   persist() {
     this.queue = this.queue.then(async () => {
       try {
-        await fs.mkdir(path.dirname(this.file), { recursive: true });
+        await ensureDir(this.file);
         if (this.pendingLines.length) {
           // Copy: record() may queue more lines while this write is in flight.
           const lines = this.pendingLines.slice();
-          await fs.appendFile(this.file, `${this.needsNewline ? '\n' : ''}${lines.join('\n')}\n`);
+          await fs.appendFile(this.file, `${this.needsNewline ? '\n' : ''}${lines.join('\n')}\n`, { mode: PRIVATE_FILE_MODE });
           this.pendingLines.splice(0, lines.length);
           this.needsNewline = false;
           this.lineCount += lines.length;
         }
         if (this.trackCoverage) {
-          await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`);
+          await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`, { mode: PRIVATE_FILE_MODE });
         }
         this.writeError = null;
       } catch (err) {
@@ -149,7 +155,7 @@ export class PrintLog {
       const lines = [...this.records.values()]
         .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime))
         .map((r) => JSON.stringify(r));
-      await writeAtomic(this.file, lines.length ? `${lines.join('\n')}\n` : '');
+      await writeAtomic(this.file, lines.length ? `${lines.join('\n')}\n` : '', { mode: PRIVATE_FILE_MODE });
       this.lineCount = lines.length;
       this.needsNewline = false;
     });
