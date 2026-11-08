@@ -136,6 +136,16 @@ export function parseFilaments(amsDetailMapping) {
     .filter((f) => f.type || f.grams);
 }
 
+// The first non-empty value a response sets for cookie `name`. A site can
+// clear a cookie (an empty value) in the same response that sets it.
+function cookieValue(res, name) {
+  return res.headers.getSetCookie()
+    .map((c) => c.split(';')[0].trim())
+    .filter((c) => c.startsWith(`${name}=`))
+    .map((c) => c.slice(name.length + 1))
+    .find(Boolean);
+}
+
 function messageFrom(json, text) {
   const m = json && (json.message || json.error || json.msg || json.detail);
   if (typeof m === 'string' && m && m.toLowerCase() !== 'success') return m;
@@ -326,10 +336,7 @@ export class BambuClient {
     // Two-factor sign-in goes through the website and returns the access
     // token as a "token" cookie.
     const csrf = await this.send(`${this.hosts.web}/api/csrf`);
-    const csrfToken = csrf.res.headers.getSetCookie()
-      .map((c) => c.split(';')[0])
-      .find((c) => c.startsWith('bbl_csrf_token='))
-      ?.slice('bbl_csrf_token='.length);
+    const csrfToken = cookieValue(csrf.res, 'bbl_csrf_token');
     if (!csrfToken) {
       throw new SourceError('Bambu did not return a CSRF token for two-factor sign-in.', { code: 'bambu_auth' });
     }
@@ -338,10 +345,7 @@ export class BambuClient {
       headers: { 'x-bbl-csrf-token': csrfToken, Cookie: `bbl_csrf_token=${csrfToken}` },
       body: { tfaKey: this.pending.tfaKey, tfaCode: code },
     });
-    const token = res.headers.getSetCookie()
-      .map((c) => c.split(';')[0])
-      .find((c) => c.startsWith('token='))
-      ?.slice('token='.length);
+    const token = cookieValue(res, 'token');
     if (!token) {
       throw new SourceError(`Bambu did not accept the two-factor code (HTTP ${res.status}): ${messageFrom(json, text) || 'no details'}`, {
         code: 'bambu_bad_code', status: res.status,

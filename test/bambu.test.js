@@ -201,6 +201,15 @@ describe('BambuClient', () => {
     assert.equal(up.calls.at(-1).headers.get('authorization'), 'Bearer tfa-token');
   });
 
+  it('takes the two-factor token from the cookie that sets it, not one that clears it', async () => {
+    const up = createMockUpstream({ bambu: { mode: 'tfa', clearTokenCookieFirst: true } });
+    const c = client(up);
+    await assert.rejects(c.getDevices(), { code: 'bambu_tfa_required' });
+    await c.submitCode('654321');
+    await c.getDevices();
+    assert.equal(up.calls.at(-1).headers.get('authorization'), 'Bearer tfa-token');
+  });
+
   it('can restart a stalled sign-in', async () => {
     const up = createMockUpstream({ bambu: { mode: 'verifyCode' } });
     const c = client(up);

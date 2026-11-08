@@ -28,17 +28,21 @@ function notConfigured(code, message, hint) {
   return { getAgenda: fail, getReservations: fail, getDay: fail, getDevices: fail, getTasks: fail };
 }
 
+// Event streams (open pages) allowed at once.
+export const MAX_EVENT_STREAMS = 200;
+
 // Password checks allowed to run at once (see verifyBusy).
 export const MAX_CONCURRENT_VERIFY = 4;
 
 // Pages that need a sign-in; anyone without one is sent to the sign-in page.
 const SIGNED_IN_PAGES = new Set(['/', '/index.html', '/usage.html', '/admin.html', '/account.html']);
 
-// `scryptParams` is for tests only, which use cheaper password hashing.
+// `scryptParams` is for tests only, which use cheaper password hashing,
+// as is `maxEventStreams`.
 // `mqttConnect` stands in for mqtt.connect in tests. The live feed only
 // connects once main() starts it.
 export async function createApp(config, {
-  fetch = globalThis.fetch, now = () => Date.now(), scryptParams, mqttConnect,
+  fetch = globalThis.fetch, now = () => Date.now(), scryptParams, mqttConnect, maxEventStreams = MAX_EVENT_STREAMS,
 } = {}) {
   let designhub;
   let bambu;
@@ -356,6 +360,12 @@ export async function createApp(config, {
     if (!req.user && !config.guestView) {
       return res.status(401).json({ error: { message: 'Sign in to continue.', code: 'login_required' } });
     }
+    // Each stream holds a connection open; the guest view needs no sign-in,
+    // so their number is capped. A page turned away retries later.
+    if (streams.size >= maxEventStreams) {
+      res.set('Retry-After', '60');
+      return res.status(503).json({ error: { message: 'Too many pages are open.', code: 'too_many_streams' } });
+    }
     res.set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -640,6 +650,8 @@ async function main() {
     app.locals.closeStreams();
     // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
+      // A collection under way has yet to queue what it read for saving.
+      await app.locals.collector.running;
       await app.locals.service.printLog?.queue;
       await app.locals.service.liveLog?.queue;
       await app.locals.service.pauseLog?.queue;

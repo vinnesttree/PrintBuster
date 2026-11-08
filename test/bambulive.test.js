@@ -260,6 +260,40 @@ describe('LivePrintWatcher', () => {
     assert.equal(recs[0].title, 'New job');
   });
 
+  it('never names a print after the job before it', async () => {
+    const t = await connected();
+    await t.report('SN-OHM', { gcode_state: 'IDLE' });
+    await t.report('SN-OHM', {
+      gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'Alice_Smith_Part', gcode_file: '/sdcard/Alice_Smith_Part.gcode.3mf',
+    });
+    t.clock.now += 30 * MIN;
+    await t.report('SN-OHM', { gcode_state: 'FINISH' });
+    // The next print, from a plain G-code file with no project name.
+    t.clock.now += 10 * MIN;
+    await t.report('SN-OHM', { gcode_state: 'RUNNING', print_type: 'local', gcode_file: '/sdcard/Bob_Part.gcode' });
+    // And one whose name never arrives.
+    t.clock.now += 30 * MIN;
+    await t.report('SN-OHM', { gcode_state: 'FINISH' });
+    t.clock.now += 10 * MIN;
+    await t.report('SN-OHM', { gcode_state: 'PREPARE', print_type: 'local' });
+    assert.deepEqual(t.records().map((r) => r.title), ['Alice_Smith_Part', 'Bob_Part', 'Untitled print']);
+  });
+
+  it('keeps what the report that ends a job says about the next one', async () => {
+    const t = await connected();
+    await t.report('SN-OHM', { gcode_state: 'RUNNING', print_type: 'local', subtask_name: 'First' });
+    t.clock.now += 30 * MIN;
+    await t.report('SN-OHM', { gcode_state: 'IDLE', subtask_name: 'Second' });
+    await t.report('SN-OHM', { gcode_state: 'PREPARE', print_type: 'local' });
+    assert.deepEqual(t.records().map((r) => r.title), ['First', 'Second']);
+  });
+
+  it('ignores a report whose print part is not an object', async () => {
+    const t = await connected();
+    await t.report('SN-OHM', ['RUNNING']);
+    assert.deepEqual(Object.keys(t.watcher.printer('SN-OHM').report), []);
+  });
+
   it('merges partial reports, as the P1 series sends them', async () => {
     const t = await connected();
     await t.report('SN-OHM', { gcode_state: 'IDLE', print_type: 'local', subtask_name: 'Clip', gcode_file: 'Clip.gcode.3mf' });
@@ -466,6 +500,21 @@ describe('pause history and feed coverage', () => {
     const again = new PrintLog(t.pauses.file, { coverage: false, fields: PAUSE_FIELDS });
     await again.load();
     assert.equal([...again.records.values()][0].endSeen, true);
+  });
+
+  it('keeps two pauses that start within the same second', async () => {
+    const t = await connected();
+    await t.report('SN-ADA', { gcode_state: 'RUNNING', print_type: 'cloud', subtask_name: 'Gear' });
+    t.clock.now += 10 * MIN;
+    await t.report('SN-ADA', { gcode_state: 'PAUSE' });
+    t.clock.now += 200;
+    await t.report('SN-ADA', { gcode_state: 'RUNNING' });
+    t.clock.now += 200;
+    await t.report('SN-ADA', { gcode_state: 'PAUSE' });
+    const pauses = t.pauseRecords();
+    assert.equal(pauses.length, 2);
+    assert.equal(new Set(pauses.map((p) => p.id)).size, 2);
+    assert.ok(pauses[0].endTime && !pauses[1].endTime);
   });
 
   it('ends a pause where the feed dropped, and starts one where it connected', async () => {

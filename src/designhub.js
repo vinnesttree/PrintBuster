@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { DateTime } from 'luxon';
 import { SourceError } from './errors.js';
-import { HUB_TIME_RE, hubTimeToUtc, shiftDate } from './time.js';
+import { HUB_TIME_RE, hubSpanToUtc, shiftDate } from './time.js';
 
 const collapse = (s) => s.replace(/\s+/g, ' ').trim();
 
@@ -58,8 +58,7 @@ export function parseAgendaHtml(html, { zone, requestedDate }) {
       const name = collapse(nameCell.text());
       const timeText = collapse(cells.eq(col.time).text());
       const times = [...timeText.matchAll(HUB_TIME_RE)];
-      const start = times[0] && hubTimeToUtc(times[0], { pageDate, zone });
-      const end = times[1] && hubTimeToUtc(times[1], { pageDate, zone });
+      const { start, end } = hubSpanToUtc(times[0], times[1], { pageDate, zone }) || {};
       if (!start || !end || end <= start) {
         skipped.push({ name, time: timeText });
         return;
@@ -228,7 +227,8 @@ export class DesignHubClient {
     const body = await res.text();
     // Studio Manager answers 404 for /admin/* when the session is not an admin,
     // and redirects when it has no session at all.
-    if (res.status === 200 && /<h1[^>]*>[^<]*Agenda/i.test(body)) return { ok: true, body };
+    // "Agenda" anywhere in an <h1>, even inside a tag nested in it.
+    if (res.status === 200 && /<h1\b[^>]*>(?:(?!<\/h1>)[\s\S]){0,500}?Agenda/i.test(body)) return { ok: true, body };
     return { ok: false, status: res.status };
   }
 

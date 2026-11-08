@@ -130,7 +130,9 @@ export function createMockUpstream({
         }
         if (payload.tfaKey === 'tfa-key-1' && payload.tfaCode === bambuState.tfaCode) {
           bambuState.validTokens.add('tfa-token');
-          return json(200, {}, { 'Set-Cookie': ['token=tfa-token; Path=/; HttpOnly', 'refreshToken=tfa-token; Path=/'] });
+          // Optionally clears an old token cookie first, as a site may.
+          const clear = bambuState.clearTokenCookieFirst ? ['token=; Path=/api; Max-Age=0'] : [];
+          return json(200, {}, { 'Set-Cookie': [...clear, 'token=tfa-token; Path=/; HttpOnly', 'refreshToken=tfa-token; Path=/'] });
         }
         return json(400, { error: 'Invalid code' });
       }

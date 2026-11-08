@@ -76,6 +76,23 @@ describe('parseAgendaHtml', () => {
     assert.equal(r.end, '2026-11-01T09:00:00.000Z'); // CST: four real hours
   });
 
+  it('reads times in the repeated hour of the fall-back change as the shortest reservation', () => {
+    const html = agendaWith([
+      // From the first 1:30 am (CDT) to the second 1:15 am (CST): 45 minutes.
+      row('Across', 'Ada', 'Nov 1  1:30 am – Nov 1  1:15 am', 1),
+      // Ends in the first 1:30 am (CDT): one hour, not two.
+      row('Before', 'Ohm', 'Nov 1 12:30 am – Nov 1  1:30 am', 2),
+      // Starts in the second 1:30 am (CST).
+      row('After', 'Euler', 'Nov 1  1:30 am – Nov 1  2:30 am', 3),
+    ].join(''), 'November 01, 2026');
+    const { reservations, skipped } = parseAgendaHtml(html, { zone: ZONE, requestedDate: '2026-11-01' });
+    assert.deepEqual(skipped, []);
+    const span = Object.fromEntries(reservations.map((r) => [r.name, [r.start, r.end]]));
+    assert.deepEqual(span.Across, ['2026-11-01T06:30:00.000Z', '2026-11-01T07:15:00.000Z']);
+    assert.deepEqual(span.Before, ['2026-11-01T05:30:00.000Z', '2026-11-01T06:30:00.000Z']);
+    assert.deepEqual(span.After, ['2026-11-01T07:30:00.000Z', '2026-11-01T08:30:00.000Z']);
+  });
+
   it('uses the page heading date, including zero-padded days', () => {
     const html = agendaWith(row('A', 'Ada', 'Oct 7  9:00 am – Oct 7 10:00 am'), 'October 07, 2026');
     const result = parseAgendaHtml(html, { zone: ZONE, requestedDate: '2026-01-01' });
@@ -183,6 +200,22 @@ describe('DesignHubClient', () => {
 
     up.hub.validSessions.clear();
     await assert.rejects(client.getReservations('2026-10-28'), { code: 'designhub_auth' });
+  });
+
+  it('accepts an agenda whose heading wraps its text in another tag', async () => {
+    const up = createMockUpstream({ hub: { reservations } });
+    const fetch = async (input, init) => {
+      const res = await up.fetch(input, init);
+      if (!String(input).includes('/admin/agenda/')) return res;
+      const html = (await res.text()).replace(/<h1([^>]*)>Today's Agenda/, "<h1$1><span class=\"title\">Today's Agenda</span>");
+      assert.match(html, /<span class="title">Today's Agenda/);
+      return new Response(html, { status: res.status, headers: res.headers });
+    };
+    const client = new DesignHubClient(cfg, { zone: ZONE, fetch });
+    const result = await client.getReservations('2026-10-27');
+    assert.deepEqual(result.reservations.map((r) => r.model).sort(), ['Faraday', 'Ohm']);
+    // Signed in once: the agenda was recognised, not taken for a lost session.
+    assert.equal(up.calls.filter((c) => c.method === 'POST').length, 1);
   });
 
   it('reports an unreachable server', async () => {

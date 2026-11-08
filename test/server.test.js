@@ -1069,6 +1069,25 @@ describe('server-side collection and live updates', () => {
     await viewersSoon(api, 0);
   });
 
+  it('turns away event streams beyond the limit, and lets one in once another closes', async () => {
+    const api = await start({ DEMO_MODE: 'true' }, { now: () => NOW, maxEventStreams: 2 });
+    const pages = [new AbortController(), new AbortController()];
+    const open = await Promise.all(pages.map((c) => fetch(`${api.base}/api/events`, { signal: c.signal })));
+    for (const res of open) assert.equal((await eventReader(res)()).event, 'hello');
+    const refused = await fetch(`${api.base}/api/events`);
+    assert.deepEqual([refused.status, refused.headers.get('retry-after'), (await refused.json()).error.code], [503, '60', 'too_many_streams']);
+    await viewersSoon(api, 2);
+
+    pages[0].abort();
+    await viewersSoon(api, 1);
+    const later = new AbortController();
+    const again = await fetch(`${api.base}/api/events`, { signal: later.signal });
+    assert.equal(again.status, 200);
+    later.abort();
+    pages[1].abort();
+    await viewersSoon(api, 0);
+  });
+
   it('reports when the data was collected with every response', async () => {
     const api = await start({ DEMO_MODE: 'true' }, { now: () => NOW });
     const compare = await (await api.get('/api/compare?date=2026-10-27')).json();

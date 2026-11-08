@@ -79,6 +79,26 @@ export function jobTitle(report) {
   return file || 'Untitled print';
 }
 
+// What the printer said about its last job. The P1 series sends only what
+// changed, so these would otherwise carry over to the next job until it
+// replaces them: a print started without a project name would be logged
+// under the previous member's.
+const JOB_FIELDS = ['subtask_name', 'gcode_file', 'gcode_start_time', 'print_type', 'mc_remaining_time'];
+
+// Forgets the finished job, once the printer has left it, keeping anything
+// the report that ended it already says about the next.
+function forgetJob(report, delta) {
+  for (const field of JOB_FIELDS) if (!(field in delta)) delete report[field];
+}
+
+// An id not yet in `records`: `base`, else `base-2`, `base-3`, ...
+function freshId(records, base) {
+  if (!records?.has(base)) return base;
+  let n = 2;
+  while (records.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
 // The printer's own start time for the job, when it is believable: in the
 // last week, not in the future, and not before the printer's last finish
 // (a value left over from the previous job).
@@ -449,7 +469,12 @@ export class LivePrintWatcher {
       return null;
     }
     const delta = json?.print;
-    if (!delta || typeof delta !== 'object') return null;
+    if (!delta || typeof delta !== 'object' || Array.isArray(delta)) return null;
+    const wasActive = ACTIVE.has(String(p.report.gcode_state ?? '').toUpperCase());
+    // A new file without a project name: the old job's name no longer applies.
+    if ('gcode_file' in delta && !('subtask_name' in delta) && delta.gcode_file !== p.report.gcode_file) {
+      delete p.report.subtask_name;
+    }
     Object.assign(p.report, delta);
     const r = p.report;
     const state = String(r.gcode_state ?? '').toUpperCase();
@@ -457,13 +482,15 @@ export class LivePrintWatcher {
     this.track(p, delta, state, now);
     this.trackPause(serial, p, now);
     if (ACTIVE.has(state)) return this.active(serial, p, r, now);
-    if (state in ENDED) return this.ended(serial, p, r, now, ENDED[state]);
-    if (state) {
+    let written = null;
+    if (state in ENDED) written = this.ended(serial, p, r, now, ENDED[state]);
+    else if (state) {
       // Idle (or a state not known here): nothing is printing now.
       p.job = null;
       p.sawIdle = true;
     }
-    return null;
+    if (wasActive && state) forgetJob(r, delta);
+    return written;
   }
 
   // Keeps what the printer is doing now (see printerStates), for every
@@ -497,7 +524,8 @@ export class LivePrintWatcher {
     if (live.paused && !p.pause) {
       const startSeen = live.pausedSince != null;
       p.pause = {
-        id: `pause-${serial}-${Math.floor(now / 1000)}`,
+        // Two pauses can start within one second.
+        id: freshId(this.pauses?.records, `pause-${serial}-${Math.floor(now / 1000)}`),
         startTime: iso(startSeen ? live.pausedSince : now),
         deviceId: serial,
         title: jobTitle(p.report),
@@ -548,7 +576,8 @@ export class LivePrintWatcher {
       // A start time left over from a print already logged.
       if (this.store.records.has(id)) {
         start = now;
-        id = `live-${serial}-${Math.floor(start / 1000)}`;
+        // A print that ended and another that started within one second.
+        id = freshId(this.store.records, `live-${serial}-${Math.floor(start / 1000)}`);
       }
       job = { id, source: 'live', startTime: iso(start), status: 'running', deviceId: serial, title };
       changed = true;
