@@ -6,7 +6,7 @@ import { after, describe, it } from 'node:test';
 import {
   AccountStore, hashPassword, LoginLimiter, SessionStore, verifyPassword,
 } from '../src/accounts.js';
-import { redactSecrets, safeNext } from '../src/auth.js';
+import { redactSecrets, redactText, safeNext } from '../src/auth.js';
 import { loadConfig } from '../src/config.js';
 import { createApp } from '../src/server.js';
 import { createMockUpstream, task } from './helpers/mock-upstream.js';
@@ -191,6 +191,38 @@ describe('sign-in limits', () => {
     assert.ok(limiter.retryAfter({ user: 'someone-else', address: '10.0.0.2' }) > 0);
     assert.equal(limiter.retryAfter({ user: 'someone-else', address: '10.0.0.3' }), 0);
   });
+
+  it('locks a username out only from the addresses that failed, up to a much higher total', () => {
+    const limiter = new LoginLimiter({ now: () => NOW, perUserTotal: 12 });
+    for (let i = 0; i < 5; i++) limiter.fail({ user: 'admin', address: '10.0.0.1' });
+    assert.ok(limiter.retryAfter({ user: 'admin', address: '10.0.0.1' }) > 0);
+    assert.equal(limiter.retryAfter({ user: 'admin', address: '10.0.0.9' }), 0);
+    for (let i = 0; i < 7; i++) limiter.fail({ user: 'admin', address: `10.0.1.${i}` });
+    assert.ok(limiter.retryAfter({ user: 'admin', address: '10.0.0.9' }) > 0);
+  });
+
+  it('counts an attempt as failed until it succeeds', () => {
+    const limiter = new LoginLimiter({ now: () => NOW });
+    const who = { user: 'ana', address: '10.0.0.1' };
+    const attempts = Array.from({ length: 8 }, () => limiter.begin(who));
+    assert.equal(attempts.filter((a) => a.attempt !== undefined).length, 5);
+    assert.ok(attempts.slice(5).every((a) => a.wait > 0));
+
+    const other = { user: 'bo', address: '10.0.0.2' };
+    limiter.fail(other);
+    const { attempt } = limiter.begin(other);
+    limiter.succeed(other, attempt);
+    assert.equal(limiter.recent('ua:bo\n10.0.0.2').length, 0);
+    assert.equal(limiter.recent('u:bo').length, 1, 'only the successful attempt is taken back');
+  });
+
+  it('keeps at most maxKeys entries, dropping those that failed longest ago', () => {
+    const limiter = new LoginLimiter({ now: () => NOW, maxKeys: 30 });
+    for (let i = 0; i < 50; i++) limiter.fail({ user: `u${i}`, address: '10.0.0.1' });
+    assert.equal(limiter.failures.size, 30);
+    assert.ok(limiter.failures.has('a:10.0.0.1'), 'a key failing again stays');
+    assert.ok(limiter.failures.has('u:u49') && !limiter.failures.has('u:u0'));
+  });
 });
 
 describe('auth helpers', () => {
@@ -205,6 +237,16 @@ describe('auth helpers', () => {
     const text = JSON.stringify({ a: 'token tok"en-1234 here', b: 'https://x.test/?k=tok%22en-1234', c: 'pw' });
     const out = JSON.parse(redactSecrets(text, ['tok"en-1234', 'pw']));
     assert.deepEqual(out, { a: 'token [redacted] here', b: 'https://x.test/?k=[redacted]', c: 'pw' });
+  });
+
+  it('redacts a URL-encoded credential when it appears decoded, and the other way round', () => {
+    const encoded = 'BAh7CEkiD3Nlc3Npb25faWQ%3D%3D--abc123';
+    const decoded = 'BAh7CEkiD3Nlc3Npb25faWQ==--abc123';
+    assert.equal(redactText(`cookie ${decoded} and ${encoded}`, [encoded]), 'cookie [redacted] and [redacted]');
+    assert.equal(redactText(`cookie ${encoded}`, [decoded]), 'cookie [redacted]');
+    assert.equal(JSON.parse(redactSecrets(JSON.stringify({ m: decoded }), [encoded])).m, '[redacted]');
+    // Text that merely can't be URL-decoded is still redacted as given.
+    assert.equal(redactText('x 100%-sure-pass y', ['100%-sure-pass']), 'x [redacted] y');
   });
 });
 
@@ -293,6 +335,22 @@ describe('signing in', () => {
     assert.equal(limited.headers.get('retry-after'), '900');
   });
 
+  it('counts sign-ins sent all at once before any is checked', async () => {
+    const api = await start({ APP_PASSWORD: ADMIN_PASSWORD });
+    const statuses = (await Promise.all(Array.from({ length: 12 }, (_, i) => api.login('admin', `wrong ${i}`)))).map((r) => r.status);
+    assert.ok(statuses.filter((s) => s === 401).length <= 5, String(statuses));
+    assert.ok(statuses.every((s) => s === 401 || s === 429), String(statuses));
+    assert.equal((await api.login('admin', ADMIN_PASSWORD)).status, 429);
+  });
+
+  it('lets you sign in from another address while yours is locked out', async () => {
+    const api = await start({ APP_PASSWORD: ADMIN_PASSWORD, TRUST_PROXY: 'loopback' });
+    const from = (ip) => ({ 'X-Forwarded-For': ip });
+    for (let i = 0; i < 5; i++) assert.equal((await api.login('admin', `wrong ${i}`, from('203.0.113.7'))).status, 401);
+    assert.equal((await api.login('admin', ADMIN_PASSWORD, from('203.0.113.7'))).status, 429);
+    assert.equal((await api.login('admin', ADMIN_PASSWORD, from('198.51.100.20'))).status, 200);
+  });
+
   it('only accepts JSON from this site', async () => {
     const api = await start({ APP_PASSWORD: ADMIN_PASSWORD });
     const form = await fetch(`${api.base}/api/login`, {
@@ -301,6 +359,12 @@ describe('signing in', () => {
     assert.equal(form.status, 415);
     const cross = await api.login('admin', ADMIN_PASSWORD, { 'Sec-Fetch-Site': 'cross-site' });
     assert.equal(cross.status, 403);
+    // Another subdomain of the same domain is the same "site", but not this origin.
+    const sibling = await api.login('admin', ADMIN_PASSWORD, { 'Sec-Fetch-Site': 'same-site' });
+    assert.equal(sibling.status, 403);
+    for (const site of ['same-origin', 'none']) {
+      assert.equal((await api.login('admin', ADMIN_PASSWORD, { 'Sec-Fetch-Site': site })).status, 200, site);
+    }
     assert.equal((await api.request('/api/login', { body: undefined, method: 'POST', headers: { 'Content-Type': 'application/json' } })).status, 400);
   });
 
@@ -326,7 +390,14 @@ describe('accounts and roles', () => {
     const staff = await api.signIn('casey', 'staff password 1');
     assert.equal((await api.request('/api/compare?date=2026-10-27', { cookie: staff })).status, 200);
     assert.equal((await api.request('/api/usage?from=2026-10-27&to=2026-10-27', { cookie: staff })).status, 200);
-    assert.equal((await api.request('/api/usage/assign', { cookie: staff, body: { printId: 'bb-9', name: 'Jane Doe' } })).status, 200);
+    // Only a print the server has seen can be charged to someone.
+    const unknown = await api.request('/api/usage/assign', { cookie: staff, body: { printId: 'bb-9', name: 'Jane Doe' } });
+    assert.deepEqual([unknown.status, (await unknown.json()).error.code], [400, 'no_print']);
+    const assigned = await api.request('/api/usage/assign', { cookie: staff, body: { printId: '2', name: 'Jane Doe' } });
+    assert.equal(assigned.status, 200);
+    // Admins can see who made it.
+    const { assignment } = await assigned.json();
+    assert.deepEqual([assignment.name, assignment.by], ['Jane Doe', 'casey']);
     for (const [p, body] of [
       ['/api/admin/status'], ['/api/accounts'], ['/api/admin/collect', {}], ['/api/usage/recalculate-total', {}],
       ['/api/bambu/restart', {}], ['/api/accounts', { username: 'evil', password: 'evil password', role: 'admin' }],

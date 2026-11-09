@@ -11,7 +11,9 @@
 // updates may have been missed meanwhile. status is the server's collection
 // schedule (see Collector#status).
 function liveUpdates(onUpdate) {
+  const RETRY_MS = 60000;
   let source = null;
+  let retry = null;
   let connections = 0;
   const open = () => {
     if (source || document.visibilityState !== 'visible') return;
@@ -22,8 +24,17 @@ function liveUpdates(onUpdate) {
       if (connections++ > 0) onUpdate(JSON.parse(e.data));
     });
     source.addEventListener('update', (e) => onUpdate(JSON.parse(e.data)));
+    // A dropped connection reconnects by itself, but a refused one (say,
+    // the server has too many pages open) is given up on: try again later.
+    source.addEventListener('error', () => {
+      if (source?.readyState !== EventSource.CLOSED) return;
+      source = null;
+      clearTimeout(retry);
+      retry = setTimeout(open, RETRY_MS);
+    });
   };
   const close = () => {
+    clearTimeout(retry);
     source?.close();
     source = null;
   };

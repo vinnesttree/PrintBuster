@@ -129,3 +129,91 @@ describe('PrintLog', () => {
     assert.deepEqual(kept.map((l) => [l.id, l.weight]), [['0', 1197], ['1', 1198], ['2', 1199]]);
   });
 });
+
+// Print titles and plate names often hold members' names.
+// Files are made private only by the user that owns them, and never by
+// root. When the tests run as root, the files are given to another user
+// and the process is made to look like that user.
+const TEST_UID = 4242;
+async function ownedByMe(t, ...files) {
+  if (process.getuid() !== 0) return;
+  for (const f of files) await fs.chown(f, TEST_UID, TEST_UID);
+  t.mock.method(process, 'getuid', () => TEST_UID);
+}
+
+describe('PrintLog file permissions', { skip: process.platform === 'win32' }, () => {
+  const mode = async (file) => (await fs.stat(file)).mode & 0o777;
+
+  it('creates the log, its coverage and its folder readable only by the owner', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-log-'));
+    const file = path.join(dir, 'nested', 'print-log.jsonl');
+    const log = new PrintLog(file);
+    await log.load();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    assert.equal(await mode(file), 0o600);
+    assert.equal(await mode(log.coverageFile), 0o600);
+    assert.equal(await mode(path.dirname(file)), 0o700);
+    await log.compact();
+    assert.equal(await mode(file), 0o600);
+  });
+
+  it('makes logs written before this private when loading them', async (t) => {
+    const { file, log } = await tempLog();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    await fs.chmod(file, 0o644);
+    await fs.chmod(log.coverageFile, 0o644);
+    await ownedByMe(t, file, log.coverageFile);
+    const again = new PrintLog(file);
+    await again.load();
+    assert.equal(await mode(file), 0o600);
+    assert.equal(await mode(again.coverageFile), 0o600);
+    assert.equal(again.records.size, 1);
+  });
+
+  it('leaves files it doesn\u2019t own alone, and changes nothing when running as root', async (t) => {
+    const { file, log } = await tempLog();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    await fs.chmod(file, 0o666);
+    const getuid = t.mock.method(process, 'getuid', () => 0);
+    await new PrintLog(file).load();
+    assert.equal(await mode(file), 0o666, 'root');
+    getuid.mock.mockImplementation(() => TEST_UID + 1);
+    await new PrintLog(file).load();
+    assert.equal(await mode(file), 0o666, 'someone else\u2019s file');
+  });
+
+  it('replaces a log it can no longer add to with a copy it owns, keeping every print', async (t) => {
+    const { file, log } = await tempLog();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    // As when root owns the file and only root may write to it.
+    const append = t.mock.method(fs, 'appendFile', async () => {
+      throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
+    });
+    const warn = t.mock.method(console, 'warn', () => {});
+    await log.record({ tasks: [task('2', 3, 4)], fetchedAt: T0 + 5 * H });
+    assert.equal(append.mock.callCount(), 1);
+    assert.equal(log.writeError, null);
+    assert.match(warn.mock.calls[0].arguments[0], /replaced with a copy PrintBuster owns/);
+    assert.deepEqual((await lines(file)).map((l) => l.id), ['1', '2']);
+    append.mock.restore();
+    await log.record({ tasks: [task('3', 6, 7)], fetchedAt: T0 + 8 * H });
+    assert.deepEqual((await lines(file)).map((l) => l.id), ['1', '2', '3']);
+    assert.equal(await mode(file), 0o600);
+  });
+
+  it('keeps prints in memory when neither the file nor its folder can be written', async (t) => {
+    const { file, log } = await tempLog();
+    await log.record({ tasks: [task('1', 0, 1)], fetchedAt: T0 + 2 * H });
+    const denied = (what) => async () => { throw Object.assign(new Error(`EACCES: permission denied, ${what}`), { code: 'EACCES' }); };
+    t.mock.method(fs, 'appendFile', denied(`open '${file}'`));
+    t.mock.method(fs, 'writeFile', denied('open tmp'));
+    t.mock.method(console, 'error', () => {});
+    await log.record({ tasks: [task('2', 3, 4)], fetchedAt: T0 + 5 * H });
+    assert.match(log.writeError, /EACCES: permission denied, open '.*print-log\.jsonl'/);
+    assert.equal(log.pendingLines.length, 1, 'kept to save later');
+    t.mock.restoreAll();
+    await log.record({ tasks: [task('3', 6, 7)], fetchedAt: T0 + 8 * H });
+    assert.equal(log.writeError, null);
+    assert.deepEqual((await lines(file)).map((l) => l.id), ['1', '2', '3']);
+  });
+});

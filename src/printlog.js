@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
-import { writeAtomic } from './files.js';
+import {
+  ensureDir, PRIVATE_FILE_MODE, restrictFile, writeAtomic,
+} from './files.js';
 
 // Every Bambu task PrintBuster reads is kept here, so pages never ask Bambu
 // themselves and prints stay available if Bambu is unreachable. One JSON
@@ -60,6 +61,11 @@ export class PrintLog {
         throw new Error(`Cannot read the print log ${this.file}: ${err.message}`);
       }
     }
+    // Task titles and plate names often hold members' names. Logs written
+    // before files were made private keep their old permissions otherwise.
+    await restrictFile(this.file);
+    if (this.trackCoverage) await restrictFile(this.coverageFile);
+
     let unreadable = 0;
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
@@ -122,17 +128,26 @@ export class PrintLog {
   persist() {
     this.queue = this.queue.then(async () => {
       try {
-        await fs.mkdir(path.dirname(this.file), { recursive: true });
+        await ensureDir(this.file);
         if (this.pendingLines.length) {
           // Copy: record() may queue more lines while this write is in flight.
           const lines = this.pendingLines.slice();
-          await fs.appendFile(this.file, `${this.needsNewline ? '\n' : ''}${lines.join('\n')}\n`);
+          try {
+            await fs.appendFile(this.file, `${this.needsNewline ? '\n' : ''}${lines.join('\n')}\n`, { mode: PRIVATE_FILE_MODE });
+            this.needsNewline = false;
+            this.lineCount += lines.length;
+          } catch (err) {
+            if (err.code !== 'EACCES' && err.code !== 'EPERM') throw err;
+            // The file can't be written to, say because another user (root)
+            // owns it. If the folder can be, replace it with a copy this
+            // process owns: every record, these lines included.
+            await this.writeAll().catch(() => { throw err; });
+            console.warn(`Print log: could not add to ${this.file} (${err.code}), so it was replaced with a copy PrintBuster owns.`);
+          }
           this.pendingLines.splice(0, lines.length);
-          this.needsNewline = false;
-          this.lineCount += lines.length;
         }
         if (this.trackCoverage) {
-          await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`);
+          await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`, { mode: PRIVATE_FILE_MODE });
         }
         this.writeError = null;
       } catch (err) {
@@ -145,15 +160,18 @@ export class PrintLog {
   }
 
   compact() {
-    this.queue = this.queue.then(async () => {
-      const lines = [...this.records.values()]
-        .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime))
-        .map((r) => JSON.stringify(r));
-      await writeAtomic(this.file, lines.length ? `${lines.join('\n')}\n` : '');
-      this.lineCount = lines.length;
-      this.needsNewline = false;
-    });
+    this.queue = this.queue.then(() => this.writeAll());
     return this.queue;
+  }
+
+  // Rewrites the log with one line per record (call from within the queue).
+  async writeAll() {
+    const lines = [...this.records.values()]
+      .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime))
+      .map((r) => JSON.stringify(r));
+    await writeAtomic(this.file, lines.length ? `${lines.join('\n')}\n` : '', { mode: PRIVATE_FILE_MODE });
+    this.lineCount = lines.length;
+    this.needsNewline = false;
   }
 
   // Raw task records that started in [sinceMs, untilMs).

@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import { ReservationArchive } from '../src/reservations.js';
 import { UsageLog } from '../src/usagelog.js';
 import { AssignmentLog } from '../src/assignments.js';
+import { writeAtomic } from '../src/files.js';
 
 const AT = Date.parse('2026-10-28T06:00:00Z');
 const booking = (id, name) => ({ id, name, model: 'Ada', tool: 'Bambu Lab P1S', start: '2026-10-27T14:00:00.000Z', end: '2026-10-27T16:00:00.000Z', isEvent: false });
@@ -157,5 +158,31 @@ describe('AssignmentLog', () => {
     assert.throws(() => log.set('bb 1/../x', 'Jane', { at: AT }), { code: 'bad_print' });
     assert.throws(() => log.set('bb-1', 'x'.repeat(101), { at: AT }), { code: 'bad_name' });
     assert.throws(() => log.set('bb-1', { name: 'Jane' }, { at: AT }), { code: 'bad_name' });
+  });
+});
+
+describe('JsonFileStore', () => {
+  it('keeps an unreadable file aside, readable only by the owner', { skip: process.platform === 'win32' }, async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-aside-'));
+    const file = path.join(dir, 'usage.json');
+    await fs.writeFile(file, '{"prints": {"1": {"name": "Jane Doe"', { mode: 0o644 });
+    // Files are made private only by their owner, never by root.
+    if (process.getuid() === 0) {
+      await fs.chown(file, 4242, 4242);
+      t.mock.method(process, 'getuid', () => 4242);
+    }
+    const log = new UsageLog(file);
+    await log.load();
+    const [aside] = (await fs.readdir(dir)).filter((f) => f.startsWith('usage.json.unreadable-'));
+    assert.ok(aside);
+    assert.equal((await fs.stat(path.join(dir, aside))).mode & 0o777, 0o600);
+  });
+
+  it('gives each atomic write its own temporary file', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-atomic-'));
+    const file = path.join(dir, 'x.json');
+    await Promise.all(Array.from({ length: 5 }, (_, i) => writeAtomic(file, `${i}\n`)));
+    assert.match(await fs.readFile(file, 'utf8'), /^[0-4]\n$/);
+    assert.deepEqual(await fs.readdir(dir), ['x.json']);
   });
 });

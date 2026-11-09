@@ -3,6 +3,7 @@ import { buildComparison, uncoveredSegments } from './compare.js';
 import { describeError, SourceError } from './errors.js';
 import { dateList, dayBounds, daysBetween, isIsoDate, shiftDate, todayIn } from './time.js';
 import { attributeUsage, MAX_OUTSIDE_SHARE } from './usage.js';
+import { checkPrintId } from './assignments.js';
 
 // Prints longer than this that started before the selected day are missed.
 const PRINT_LOOKBACK_MS = 48 * 3600 * 1000;
@@ -648,12 +649,19 @@ export class CompareService {
   // Charges a print with no reservation to a member, or removes the
   // assignment when `name` is empty. Its saved usage is updated at once, so
   // the all-time totals reflect it without a recalculation.
-  async assign(printId, name) {
+  // `by` is the account making the change.
+  async assign(printId, name, { by = null } = {}) {
     if (!this.assignments) {
       throw new SourceError('Assignments are not available.', { code: 'not_saved' });
     }
+    const id = checkPrintId(printId);
+    // Only a print PrintBuster has seen can be charged to someone; removing
+    // an assignment works even after its print is gone.
+    if (typeof name === 'string' && name.trim() && !this.knowsPrint(id)) {
+      throw new SourceError('There is no print with that id.', { code: 'no_print' });
+    }
     const now = this.now();
-    await this.assignments.set(printId, name, { at: now });
+    await this.assignments.set(id, name, { at: now, by });
     const assigned = this.assignments.get(printId) || null;
     const saved = this.usageLog?.get(printId);
     if (saved && !saved.reservation) {
@@ -669,6 +677,11 @@ export class CompareService {
       allTime: this.usageLog ? this.usageLog.totals() : null,
       assignments: this.assignments.stats(),
     };
+  }
+
+  // Whether a print with this id is in the saved usage or a print log.
+  knowsPrint(id) {
+    return Boolean(this.usageLog?.get(id) || this.printLog?.records.has(id) || this.liveLog?.records.has(id));
   }
 
   // Recalculates the usage of every print from saved data only: the print

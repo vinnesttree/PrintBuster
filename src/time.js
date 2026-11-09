@@ -41,7 +41,7 @@ export const HUB_TIME_RE = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[
 
 // The agenda omits the year, so pick whichever year puts the timestamp
 // closest to the page's date (handles reservations that span New Year's).
-export function hubTimeToUtc(match, { pageDate, zone }) {
+function hubDateTime(match, { pageDate, zone }) {
   const [, mon, day, hh, mm, ap] = match;
   let hour = Number(hh) % 12;
   if (ap.toLowerCase() === 'p') hour += 12;
@@ -56,5 +56,32 @@ export function hubTimeToUtc(match, { pageDate, zone }) {
     const distance = Math.abs(dt.toMillis() - anchor.toMillis());
     if (!best || distance < best.distance) best = { dt, distance };
   }
-  return best ? best.dt.toUTC().toISO() : null;
+  return best?.dt || null;
+}
+
+// Every instant a wall-clock time can mean, earliest first: two in the hour
+// the clocks fall back (1:30 am happens twice), one otherwise.
+function instants(dt) {
+  const all = dt.getPossibleOffsets ? dt.getPossibleOffsets() : [dt];
+  return [...new Set(all.map((d) => d.toUTC().toISO()))].sort();
+}
+
+// A reservation's start and end, as UTC ISO times. When the clocks fall
+// back, a time in the repeated hour could mean either; the shortest
+// reservation the two times can describe is taken (from the first 1:30 am
+// to the second 1:15 am is 45 minutes, not an end before the start).
+// Null when either time can't be read.
+export function hubSpanToUtc(startMatch, endMatch, opts) {
+  const start = startMatch && hubDateTime(startMatch, opts);
+  const end = endMatch && hubDateTime(endMatch, opts);
+  if (!start || !end) return null;
+  let best = null;
+  for (const s of instants(start)) {
+    for (const e of instants(end)) {
+      const length = Date.parse(e) - Date.parse(s);
+      if (length > 0 && (!best || length < best.length)) best = { start: s, end: e, length };
+    }
+  }
+  // No reading has the end after the start: left for the caller to report.
+  return best ? { start: best.start, end: best.end } : { start: start.toUTC().toISO(), end: end.toUTC().toISO() };
 }

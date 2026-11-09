@@ -48,7 +48,7 @@ PrintBuster calls a Kuma push URL after every collection, with `status=up` or `s
 
 9. Restart PrintBuster: `npm start`, or `docker compose up -d` with Docker. The startup log says `Reporting to Uptime Kuma after each collection: designhub, bambu.`
 
-Within a minute both monitors should turn green. Each heartbeat shows `OK` and the time PrintBuster took to read that source. When a source fails, the heartbeat message is the same error the PrintBuster page shows, e.g. `Bambu emailed a verification code to s***@example.com. Enter it to finish signing in.`
+Within a minute both monitors should turn green. Each heartbeat shows `OK` and the time PrintBuster took to read that source. When a source fails, the heartbeat message is the same error the PrintBuster page shows, e.g. `Bambu emailed a verification code to s***@example.com. Enter it to finish signing in.` Like everything the server sends, it has any Design Hub or Bambu credential replaced with `[redacted]`.
 
 Things to know:
 

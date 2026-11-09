@@ -98,6 +98,24 @@ describe('config', () => {
     }
   });
 
+  it('warns when .env can be read by other users, since it holds credentials', { skip: process.platform === 'win32' }, async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-env-'));
+    const file = path.join(dir, '.env');
+    await fs.writeFile(file, 'PB_TEST_PERM=1\n', { mode: 0o644 });
+    await fs.chmod(file, 0o644);
+    const warn = t.mock.method(console, 'warn', () => {});
+    try {
+      loadEnvFile(file);
+      assert.equal(warn.mock.callCount(), 1);
+      assert.match(warn.mock.calls[0].arguments[0], /can be read by other users.*chmod 600/);
+      await fs.chmod(file, 0o600);
+      loadEnvFile(file);
+      assert.equal(warn.mock.callCount(), 1, 'no warning once it is private');
+    } finally {
+      delete process.env.PB_TEST_PERM;
+    }
+  });
+
   it('explains a .env folder left behind by a Docker mount', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-env-'));
     await fs.mkdir(path.join(dir, '.env'));
@@ -1047,6 +1065,25 @@ describe('server-side collection and live updates', () => {
 
     pages[0].abort();
     await viewersSoon(api, 1);
+    pages[1].abort();
+    await viewersSoon(api, 0);
+  });
+
+  it('turns away event streams beyond the limit, and lets one in once another closes', async () => {
+    const api = await start({ DEMO_MODE: 'true' }, { now: () => NOW, maxEventStreams: 2 });
+    const pages = [new AbortController(), new AbortController()];
+    const open = await Promise.all(pages.map((c) => fetch(`${api.base}/api/events`, { signal: c.signal })));
+    for (const res of open) assert.equal((await eventReader(res)()).event, 'hello');
+    const refused = await fetch(`${api.base}/api/events`);
+    assert.deepEqual([refused.status, refused.headers.get('retry-after'), (await refused.json()).error.code], [503, '60', 'too_many_streams']);
+    await viewersSoon(api, 2);
+
+    pages[0].abort();
+    await viewersSoon(api, 1);
+    const later = new AbortController();
+    const again = await fetch(`${api.base}/api/events`, { signal: later.signal });
+    assert.equal(again.status, 200);
+    later.abort();
     pages[1].abort();
     await viewersSoon(api, 0);
   });

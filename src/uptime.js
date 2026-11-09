@@ -44,11 +44,13 @@ export function sourceHealth(collected, source, { now, staleMs = 0 }) {
 }
 
 // The push message for a source: what went wrong, or that it was read.
-function pushMessage(collected, source, demo) {
+// Upstream errors can quote what the site answered, so `redact` removes
+// every credential before the message leaves the server in a URL.
+function pushMessage(collected, source, { demo, redact }) {
   const found = collected[source];
   if (found.ok) return demo ? 'OK (demo data)' : 'OK';
   const { message, hint } = describeError(found.error);
-  const text = [message, hint].filter(Boolean).join(' ');
+  const text = redact([message, hint].filter(Boolean).join(' '));
   return text.length > MAX_MESSAGE ? `${text.slice(0, MAX_MESSAGE - 1)}…` : text;
 }
 
@@ -65,10 +67,12 @@ export function pushUrl(base, { up, message, ping }) {
 
 export class UptimeKumaPusher {
   // `urls` maps a source ('designhub', 'bambu') to its Kuma push URL.
-  constructor(urls, { fetch = globalThis.fetch, demo = false } = {}) {
+  // `redact` takes a message and returns it without credentials.
+  constructor(urls, { fetch = globalThis.fetch, demo = false, redact = (text) => text } = {}) {
     this.urls = Object.entries(urls || {}).filter(([source, url]) => SOURCES[source] && url);
     this.fetch = fetch;
     this.demo = demo;
+    this.redact = redact;
     // The last push failure per source, so it is logged once, not every run.
     this.errors = new Map();
     // The pushes in flight, so shutdown and tests can wait for them.
@@ -87,7 +91,7 @@ export class UptimeKumaPusher {
       const found = collected[source];
       const url = pushUrl(base, {
         up: Boolean(found?.ok),
-        message: pushMessage(collected, source, this.demo),
+        message: pushMessage(collected, source, { demo: this.demo, redact: this.redact }),
         ping: found?.ok ? found.durationMs : null,
       });
       try {

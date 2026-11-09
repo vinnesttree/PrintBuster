@@ -51,8 +51,11 @@ To use live data:
 
 ```sh
 cp .env.example .env   # then fill in the logins, and APP_USERNAME and APP_PASSWORD
+chmod 600 .env         # it holds credentials
 npm start
 ```
+
+`.env` holds the Design Hub and Bambu logins, which can read every member's reservations and prints. PrintBuster warns at startup when other users of the computer can read it.
 
 Sign in with `APP_USERNAME` and `APP_PASSWORD`. That creates the first admin account; add the others on the Admin page. See [Accounts and the guest view](#accounts-and-the-guest-view).
 
@@ -64,6 +67,7 @@ You need Docker with the Compose plugin. Node.js isn't needed on the host.
 
 ```sh
 cp .env.example .env   # fill in the logins, or skip this step for demo data
+chmod 600 .env         # it holds credentials
 docker compose up -d --build
 ```
 
@@ -151,7 +155,7 @@ How sign-in is kept secure:
 
 - **Passwords** need 10 to 256 characters and can't be the username. They're stored only as salted scrypt hashes (N = 2^15, r = 8, p = 3, one of OWASP's recommended settings) in `data/accounts.json`, which only its owner can read.
 - **Sign-ins** use a random 256-bit token in a cookie that page scripts can't read (`HttpOnly`) and other sites can't send (`SameSite=Strict`), marked `Secure` over HTTPS (see `COOKIE_SECURE` and `TRUST_PROXY`). The server keeps only a SHA-256 hash of each token, in `data/sessions.json`, so neither file holds anything that signs anyone in. Signing in always starts a fresh session, and **Sign out** ends it on the server.
-- **Failed sign-ins** are limited: after 5 for one username, or 20 from one address, within 15 minutes, signing in is refused for the rest of that window, even with the right password. A wrong username takes as long to check as a wrong password, so failed sign-ins don't reveal which usernames exist. Failures are logged with the username and address.
+- **Failed sign-ins** are limited: after 5 for one username from one address, 100 for one username from anywhere, or 20 from one address, within 15 minutes, signing in is refused for the rest of that window, even with the right password. Someone failing to sign in as `admin` from their own address doesn't lock the real admin out of theirs. Sign-ins sent all at once count as they arrive, and the server turns away more than 4 password checks at a time with "busy". A wrong username takes as long to check as a wrong password, so failed sign-ins don't reveal which usernames exist. Failures are logged with the username and address.
 - **Requests that change something** must be JSON and can't come from another site.
 - **Credentials stay on the server.** The Design Hub password and session cookie, the Bambu password and access token, `APP_PASSWORD`, password hashes and sign-in tokens are used only to collect data and check sign-ins, and are never sent to a browser. Pages get only what they display. As a safeguard, every API response and live update is checked for those credentials before it is sent, and any found (for example in an error message Bambu echoed back) is replaced with `[redacted]`.
 - **Serve it over HTTPS** when anyone else can reach it, for example behind a reverse proxy such as Caddy or nginx with `TRUST_PROXY` set. Over plain HTTP, passwords and sign-in cookies cross the network unencrypted.
@@ -183,6 +187,7 @@ Bambu's cloud keeps the account's whole print history, the list Bambu Studio's p
 - **Gaps.** Next to it, `print-log.coverage.json` lists the time spans PrintBuster actually observed. Time before the log's first print, or a span a collection couldn't read to the end, is a gap. The page then says which hours of the day have no data, and **Import Bambu history** fills it in. It also won't mark reservations in those hours as "no print recorded", and before the log started it shows "—" instead of zero counts.
 - **Unknown finishes.** If a print was still running the last time PrintBuster saw it, and no later read found it again (for example, Bambu removed it), it shows as "Finish not recorded" and is drawn to its estimated end.
 - **Size.** About one or two lines per print, so a busy year is a few megabytes.
+- **Privacy.** Job titles and plate names often include members' names, so the print log, the live feed's logs (`live-prints.jsonl`, `printer-pauses.jsonl`) and their coverage files are readable only by the file's owner, like the other saved data. Logs written by older versions are tightened when PrintBuster starts, if it owns them (never when it runs as root). If a data file belongs to another user and can't be written to, say because root owns it, PrintBuster replaces it with a copy it owns holding the same data; that only needs the user PrintBuster runs as to be able to write to the data folder.
 
 ### Finding the Design Hub session cookie
 
@@ -342,7 +347,7 @@ All three files are in `data/`, on the Docker volume, and readable only by the f
 
 - **`reservations.json`** holds every Design Hub agenda day PrintBuster has read, with all of that day's reservations. A day read after it ended is final: the usage page uses the saved copy instead of asking Design Hub again, so past usage still works if Design Hub is down or a reservation later disappears from it. The server's [data collection](#data-collection) also saves each finished day since the print log started, a few days per run, even if nobody opens a page. If Design Hub can't be reached for a day that isn't final yet, an earlier saved copy is used and the page says so.
 - **`usage.json`** holds the latest calculated usage of every print: who it was charged to, which reservation (or which member staff assigned it to), grams used, whether it counted and why.
-- **`assignments.json`** holds the prints with no reservation that staff assigned to a member: the print id, the member's name and when it was assigned. Assigning or removing updates `usage.json` at once, so the all-time totals change without a recalculation. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
+- **`assignments.json`** holds the prints with no reservation that staff assigned to a member: the print id, the member's name, when it was assigned and which account assigned it. Only a print PrintBuster has seen can be assigned. The server log records which account assigned or removed each print, without the member's name. Assigning or removing updates `usage.json` at once, so the all-time totals change without a recalculation. It is updated whenever usage is calculated; an entry's `calculatedAt` changes only when its result does. The **All time** figures are summed from it.
 
 The Admin page's buttons:
 

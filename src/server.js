@@ -9,7 +9,7 @@ import { DesignHubClient } from './designhub.js';
 import { AccountStore, LoginLimiter, publicAccount, SessionStore } from './accounts.js';
 import { AssignmentLog } from './assignments.js';
 import {
-  clearedCookie, readCookie, redactSecrets, safeNext, SESSION_COOKIE, sessionCookie, sessionUser,
+  clearedCookie, readCookie, redactSecrets, redactText, safeNext, SESSION_COOKIE, sessionCookie, sessionUser,
 } from './auth.js';
 import { Collector } from './collector.js';
 import { ReservationImport } from './importer.js';
@@ -28,14 +28,21 @@ function notConfigured(code, message, hint) {
   return { getAgenda: fail, getReservations: fail, getDay: fail, getDevices: fail, getTasks: fail };
 }
 
+// Event streams (open pages) allowed at once.
+export const MAX_EVENT_STREAMS = 200;
+
+// Password checks allowed to run at once (see verifyBusy).
+export const MAX_CONCURRENT_VERIFY = 4;
+
 // Pages that need a sign-in; anyone without one is sent to the sign-in page.
 const SIGNED_IN_PAGES = new Set(['/', '/index.html', '/usage.html', '/admin.html', '/account.html']);
 
-// `scryptParams` is for tests only, which use cheaper password hashing.
+// `scryptParams` is for tests only, which use cheaper password hashing,
+// as is `maxEventStreams`.
 // `mqttConnect` stands in for mqtt.connect in tests. The live feed only
 // connects once main() starts it.
 export async function createApp(config, {
-  fetch = globalThis.fetch, now = () => Date.now(), scryptParams, mqttConnect,
+  fetch = globalThis.fetch, now = () => Date.now(), scryptParams, mqttConnect, maxEventStreams = MAX_EVENT_STREAMS,
 } = {}) {
   let designhub;
   let bambu;
@@ -103,6 +110,24 @@ export async function createApp(config, {
   }
   await createFirstAdmin(config, accounts, sessions);
   const limiter = new LoginLimiter({ now });
+  // Each password check takes 32 MiB and a slice of Node's small thread
+  // pool, which file reads and writes share. A flood of sign-ins beyond
+  // this many at once is turned away rather than queued.
+  let verifyingNow = 0;
+  const verifyBusy = (res) => {
+    if (verifyingNow < MAX_CONCURRENT_VERIFY) return false;
+    res.set('Retry-After', '1');
+    res.status(429).json({ error: { message: 'The server is busy. Try again in a moment.', code: 'busy' } });
+    return true;
+  };
+  const verifying = async (check) => {
+    verifyingNow++;
+    try {
+      return await check();
+    } finally {
+      verifyingNow--;
+    }
+  };
   const service = new CompareService(config, {
     designhub, bambu, printLog, reservationArchive, usageLog, assignments, now, liveLog, live, pauseLog,
   });
@@ -119,7 +144,9 @@ export async function createApp(config, {
   // knows someone is watching, and how it tells them new data is in.
   const streams = new Set();
   const send = (res, event, data) => res.write(`event: ${event}\ndata: ${redactSecrets(JSON.stringify(data), secrets())}\n\n`);
-  const kuma = new UptimeKumaPusher(config.uptimeKumaPush, { fetch, demo: config.demo });
+  const kuma = new UptimeKumaPusher(config.uptimeKumaPush, {
+    fetch, demo: config.demo, redact: (text) => redactText(text, secrets()),
+  });
   const collector = new Collector({
     run: () => service.collect(),
     activeMs: config.pollActiveMinutes * 60000,
@@ -209,11 +236,14 @@ export async function createApp(config, {
   // API answers are per user and never cached. Requests that change
   // something must be JSON from this site: another site can't send JSON
   // without the browser asking first, and SameSite=Strict keeps the session
-  // cookie off its requests anyway.
+  // cookie off its requests anyway. Pages on other subdomains of the same
+  // domain count as the same "site" for both, so browsers' Sec-Fetch-Site
+  // must also say the request came from this origin (or was typed in).
   app.use('/api', (req, res, next) => {
     res.set('Cache-Control', 'no-store');
     if (req.method === 'GET' || req.method === 'HEAD') return next();
-    if (req.get('sec-fetch-site') === 'cross-site') {
+    const site = req.get('sec-fetch-site');
+    if (site && site !== 'same-origin' && site !== 'none') {
       return res.status(403).json({ error: { message: 'Requests from other sites are not allowed.', code: 'cross_site' } });
     }
     if (!req.is('application/json')) {
@@ -276,20 +306,20 @@ export async function createApp(config, {
       return res.status(400).json({ error: { message: 'Enter a username and password.', code: 'bad_login' } });
     }
     const who = { user: username.trim().toLowerCase(), address: req.ip };
-    const wait = limiter.retryAfter(who);
+    if (verifyBusy(res)) return;
+    const { wait, attempt } = limiter.begin(who);
     if (wait) {
       res.set('Retry-After', String(wait));
       return res.status(429).json({
         error: { message: `Too many failed sign-ins. Try again in ${Math.ceil(wait / 60)} min.`, code: 'login_limited' },
       });
     }
-    const account = await accounts.verify(username, password);
+    const account = await verifying(() => accounts.verify(username, password));
     if (!account) {
-      limiter.fail(who);
       console.warn(`Sign-in failed for ${JSON.stringify(who.user.slice(0, 64))} from ${req.ip}.`);
       return res.status(401).json({ error: { message: 'Wrong username or password.', code: 'bad_login' } });
     }
-    limiter.succeed(who);
+    limiter.succeed(who, attempt);
     // A fresh session every time, so a token set before sign-in is never reused.
     await sessions.revoke(readCookie(req, SESSION_COOKIE));
     const token = await sessions.create(account.username);
@@ -329,6 +359,12 @@ export async function createApp(config, {
   app.get('/api/events', (req, res) => {
     if (!req.user && !config.guestView) {
       return res.status(401).json({ error: { message: 'Sign in to continue.', code: 'login_required' } });
+    }
+    // Each stream holds a connection open; the guest view needs no sign-in,
+    // so their number is capped. A page turned away retries later.
+    if (streams.size >= maxEventStreams) {
+      res.set('Retry-After', '60');
+      return res.status(503).json({ error: { message: 'Too many pages are open.', code: 'too_many_streams' } });
     }
     res.set({
       'Content-Type': 'text/event-stream',
@@ -410,7 +446,10 @@ export async function createApp(config, {
   // Charges a print with no reservation to a member ({ printId, name }), or
   // removes that with an empty name.
   app.post('/api/usage/assign', async (req, res) => {
-    res.json(await service.assign(req.body?.printId, req.body?.name));
+    const result = await service.assign(req.body?.printId, req.body?.name, { by: req.user.username });
+    // Who changed which print, for admins; the member's name stays out of the log.
+    console.log(`Print ${String(req.body.printId)} ${result.assignment ? 'assigned' : 'unassigned'} by ${req.user.username || 'the open demo'}.`);
+    res.json(result);
   });
 
   // Admin tasks. The status of the server's collection and of the Bambu
@@ -490,15 +529,17 @@ export async function createApp(config, {
     if (req.user.open) throw new SourceError('No one is signed in.', { code: 'not_signed_in' });
     const { currentPassword, newPassword } = req.body || {};
     const who = { user: req.user.username, address: req.ip };
-    const wait = limiter.retryAfter(who);
+    if (verifyBusy(res)) return;
+    const { wait, attempt } = limiter.begin(who);
     if (wait) {
       res.set('Retry-After', String(wait));
       return res.status(429).json({ error: { message: `Too many wrong passwords. Try again in ${Math.ceil(wait / 60)} min.`, code: 'login_limited' } });
     }
-    if (typeof currentPassword !== 'string' || currentPassword.length > 1024 || !await accounts.verify(req.user.username, currentPassword)) {
-      limiter.fail(who);
+    if (typeof currentPassword !== 'string' || currentPassword.length > 1024
+      || !await verifying(() => accounts.verify(req.user.username, currentPassword))) {
       return res.status(400).json({ error: { message: 'Your current password is wrong.', code: 'bad_password' } });
     }
+    limiter.succeed(who, attempt);
     await accounts.setPassword(req.user.username, newPassword);
     await sessions.revokeUser(req.user.username, { exceptId: req.session.id });
     res.json({ ok: true });
@@ -609,6 +650,8 @@ async function main() {
     app.locals.closeStreams();
     // Let any print log or reservation write in flight finish before exiting.
     server.close(async () => {
+      // A collection under way has yet to queue what it read for saving.
+      await app.locals.collector.running;
       await app.locals.service.printLog?.queue;
       await app.locals.service.liveLog?.queue;
       await app.locals.service.pauseLog?.queue;
