@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -14,11 +15,22 @@ export function ensureDir(file) {
 
 // Makes an existing file readable only by its owner: a mode passed when
 // writing applies only when a file is created, so older files keep theirs.
-// Fails quietly, e.g. when the file is missing or owned by someone else.
+// Only a file this process owns is changed, and never when running as root,
+// which could leave a file the usual user can no longer read. On folders
+// with access control lists a mode change can take away access the list
+// gave, so the old mode is put back if this process lost access. Fails
+// quietly, e.g. when the file is missing.
 export async function restrictFile(file) {
   try {
-    const { mode } = await fs.stat(file);
-    if (mode & 0o077) await fs.chmod(file, mode & 0o700);
+    const me = process.getuid?.();
+    const { mode, uid } = await fs.stat(file);
+    if (!(mode & 0o077) || me === undefined || me === 0 || uid !== me) return;
+    await fs.chmod(file, mode & 0o700);
+    try {
+      await fs.access(file, constants.R_OK | constants.W_OK);
+    } catch {
+      await fs.chmod(file, mode & 0o7777);
+    }
   } catch {
     // Nothing to restrict.
   }
@@ -28,7 +40,10 @@ export async function restrictFile(file) {
 // can never share one.
 let tmpSeq = 0;
 
-// Writes a whole file so a crash never leaves it half written.
+// Writes a whole file so a crash never leaves it half written. It replaces
+// the file rather than writing into it, so it only needs to be able to
+// write to the folder: a file left by another user (say, root) is replaced
+// with one this process owns.
 export async function writeAtomic(file, text, { mode } = {}) {
   const tmp = `${file}.${process.pid}.${++tmpSeq}.tmp`;
   try {

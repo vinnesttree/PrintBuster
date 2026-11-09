@@ -601,7 +601,7 @@ function renderBanners() {
   const feed = liveFeedBanner(state.data.liveFeed, state.data.day.start, state.data.now);
   if (feed) list.push(feed);
   if (sources.bambu.log?.writeError) {
-    list.push(banner('icon-bad', '✕', 'Could not save the print log', `${sources.bambu.log.writeError}. New prints are kept in memory and saved once this is fixed, but are lost if PrintBuster restarts first. Check that the data folder (or Docker volume) is writable.`));
+    list.push(banner('icon-bad', '✕', 'Could not save the print log', `${sources.bambu.log.writeError}. New prints are kept in memory and saved once this is fixed, but are lost if PrintBuster restarts first. Check that the user PrintBuster runs as can write to the data folder (or Docker volume): PrintBuster replaces files in it that it can’t write to itself, but needs the folder.`));
   }
   if (sources.bambu.ok && !sources.bambu.complete && !GUEST) {
     list.push(banner('icon-partial', '!', 'Bambu print history may be incomplete',

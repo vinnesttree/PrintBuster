@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { SourceError } from './errors.js';
-import { ensureDir } from './files.js';
+import { ensureDir, PRIVATE_FILE_MODE, writeAtomic } from './files.js';
 
 // Endpoints and headers follow the community-documented Bambu cloud API
 // (OpenBambuAPI, ha-bambulab). China accounts use the .cn hosts.
@@ -203,10 +203,11 @@ export class BambuClient {
       : null;
     try {
       await ensureDir(this.cfg.tokenCachePath);
-      await fs.writeFile(
+      // Replaced whole, so a token file left by another user doesn't block it.
+      await writeAtomic(
         this.cfg.tokenCachePath,
         JSON.stringify({ email: this.cfg.email, accessToken: token, savedAt: new Date(this.now()).toISOString(), expiresAt }, null, 2),
-        { mode: 0o600 },
+        { mode: PRIVATE_FILE_MODE },
       );
     } catch (err) {
       console.warn(`Could not save the Bambu token cache: ${err.message}`);

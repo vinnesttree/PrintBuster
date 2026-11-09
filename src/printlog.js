@@ -132,10 +132,19 @@ export class PrintLog {
         if (this.pendingLines.length) {
           // Copy: record() may queue more lines while this write is in flight.
           const lines = this.pendingLines.slice();
-          await fs.appendFile(this.file, `${this.needsNewline ? '\n' : ''}${lines.join('\n')}\n`, { mode: PRIVATE_FILE_MODE });
+          try {
+            await fs.appendFile(this.file, `${this.needsNewline ? '\n' : ''}${lines.join('\n')}\n`, { mode: PRIVATE_FILE_MODE });
+            this.needsNewline = false;
+            this.lineCount += lines.length;
+          } catch (err) {
+            if (err.code !== 'EACCES' && err.code !== 'EPERM') throw err;
+            // The file can't be written to, say because another user (root)
+            // owns it. If the folder can be, replace it with a copy this
+            // process owns: every record, these lines included.
+            await this.writeAll().catch(() => { throw err; });
+            console.warn(`Print log: could not add to ${this.file} (${err.code}), so it was replaced with a copy PrintBuster owns.`);
+          }
           this.pendingLines.splice(0, lines.length);
-          this.needsNewline = false;
-          this.lineCount += lines.length;
         }
         if (this.trackCoverage) {
           await writeAtomic(this.coverageFile, `${JSON.stringify({ intervals: this.intervals.map(([s, e]) => [iso(s), iso(e)]) }, null, 2)}\n`, { mode: PRIVATE_FILE_MODE });
@@ -151,15 +160,18 @@ export class PrintLog {
   }
 
   compact() {
-    this.queue = this.queue.then(async () => {
-      const lines = [...this.records.values()]
-        .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime))
-        .map((r) => JSON.stringify(r));
-      await writeAtomic(this.file, lines.length ? `${lines.join('\n')}\n` : '', { mode: PRIVATE_FILE_MODE });
-      this.lineCount = lines.length;
-      this.needsNewline = false;
-    });
+    this.queue = this.queue.then(() => this.writeAll());
     return this.queue;
+  }
+
+  // Rewrites the log with one line per record (call from within the queue).
+  async writeAll() {
+    const lines = [...this.records.values()]
+      .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime))
+      .map((r) => JSON.stringify(r));
+    await writeAtomic(this.file, lines.length ? `${lines.join('\n')}\n` : '', { mode: PRIVATE_FILE_MODE });
+    this.lineCount = lines.length;
+    this.needsNewline = false;
   }
 
   // Raw task records that started in [sinceMs, untilMs).

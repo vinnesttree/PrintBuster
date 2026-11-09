@@ -162,10 +162,15 @@ describe('AssignmentLog', () => {
 });
 
 describe('JsonFileStore', () => {
-  it('keeps an unreadable file aside, readable only by the owner', { skip: process.platform === 'win32' }, async () => {
+  it('keeps an unreadable file aside, readable only by the owner', { skip: process.platform === 'win32' }, async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pb-aside-'));
     const file = path.join(dir, 'usage.json');
     await fs.writeFile(file, '{"prints": {"1": {"name": "Jane Doe"', { mode: 0o644 });
+    // Files are made private only by their owner, never by root.
+    if (process.getuid() === 0) {
+      await fs.chown(file, 4242, 4242);
+      t.mock.method(process, 'getuid', () => 4242);
+    }
     const log = new UsageLog(file);
     await log.load();
     const [aside] = (await fs.readdir(dir)).filter((f) => f.startsWith('usage.json.unreadable-'));
