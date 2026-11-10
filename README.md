@@ -228,7 +228,11 @@ You only need this if signing in with `BAMBU_EMAIL` and `BAMBU_PASSWORD` fails, 
    BAMBU_ACCESS_TOKEN='PASTE_THE_TOKEN_HERE'
    ```
 
-Bambu's sign-in tokens usually last about 3 months. When the page says "Bambu rejected BAMBU_ACCESS_TOKEN", copy a new one. This token also gives full access to the Bambu account, so keep it private.
+Bambu's tokens have been reported to last about 3 months, but one copied from makerworld.com can stop working sooner: signing out of the website, changing the password or signing out everywhere ends it. To keep it longer, copy it from a private window and close that window without signing out. Newer tokens are 144 characters without dots (older ones were three dot-separated parts starting `eyJ`); the newer kind carries no expiry date PrintBuster can read. When the page says "Bambu rejected BAMBU_ACCESS_TOKEN", copy a new one. This token also gives full access to the Bambu account, so keep it private.
+
+#### If Cloudflare blocks requests that carry a token
+
+When the page says Cloudflare blocked a request even though `BAMBU_ACCESS_TOKEN` is set, the block happened before Bambu looked at the token, so a new token won't help. Bambu's Cloudflare refuses requests that claim to be the OrcaSlicer slicer, which older versions of PrintBuster did, so it no longer sends those headers. Otherwise Cloudflare may be blocking the network address, for example after many failed sign-ins or from a VPN or cloud server. Remove `BAMBU_PASSWORD` from `.env` so failed sign-ins stop, and try again later or from another network.
 
 ## How it works
 
@@ -383,7 +387,7 @@ Each collection only reads the last couple of days of Bambu's print history. To 
 - **SD card and LAN prints come only from the live feed.** Bambu's print history leaves them out. PrintBuster sees them on the printers' [live feed](#printers-live-feed-sd-card-and-lan-prints) while it is connected, with no filament amount. Those that run while it is off are missed, and a printer in LAN-only mode is never seen. A reservation used that way shows as "no print recorded", not as a violation.
 - **The live feed is untested against Bambu's broker.** It follows the community documentation, and was tested against a local MQTT broker and simulated printer reports. Check the Admin page after starting a print from the SD card.
 - **Untested against the live sites.** Neither site could be reached from the environment this was built in. The Design Hub side is based on the Studio Manager source and the userscript's parsing. The Bambu side is based on the community documentation above. The automated tests run both clients against simulations of that behavior.
-- **The Bambu API may change.** Because it is unofficial, Bambu can change it at any time. If Bambu's Cloudflare protection blocks the login, the app explains how to use `BAMBU_ACCESS_TOKEN` instead.
+- **The Bambu API may change.** Because it is unofficial, Bambu can change it at any time. If Bambu's Cloudflare protection blocks the login, the app explains how to use `BAMBU_ACCESS_TOKEN` instead. Bambu's Cloudflare also blocks requests that identify as a slicer, so PrintBuster identifies as a plain client.
 - **Very long prints can be missed.** Prints that started more than 48 hours before the selected day are not fetched.
 
 ## Development

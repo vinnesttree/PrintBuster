@@ -124,7 +124,7 @@ Kuma's alert for a pull monitor says only that the status code was 503. To see w
 | `bambu_unreachable` | Bambu | The Bambu cloud couldn't be reached: it's down, or a network or DNS problem. |
 | `bambu_code_required`, `bambu_tfa_required` | Bambu | Open PrintBuster and type in the code Bambu emailed, or the authenticator code. |
 | `bambu_auth` | Bambu | The sign-in or `BAMBU_ACCESS_TOKEN` was rejected. See [Finding a Bambu access token](../README.md#finding-a-bambu-access-token). |
-| `bambu_cloudflare` | Bambu | Bambu's Cloudflare protection blocked the request. Use `BAMBU_ACCESS_TOKEN` (same link). |
+| `bambu_cloudflare` | Bambu | Bambu's Cloudflare protection blocked the request. Without a token, use `BAMBU_ACCESS_TOKEN` (same link). With one, a new token won't help: see "If Cloudflare blocks requests that carry a token" in the README. |
 | `bambu_api` | Bambu | Bambu's API returned an error. Usually temporary. |
 | `bambu_not_configured` | Bambu | Add `BAMBU_EMAIL` and `BAMBU_PASSWORD`, or `BAMBU_ACCESS_TOKEN`, to `.env`. |
 | `error` | Either | Another unexpected error. PrintBuster's log and page show the details. |
