@@ -142,7 +142,7 @@ describe('BambuClient', () => {
   });
   const client = (up, overrides = {}) => new BambuClient({ ...cfg, ...overrides }, { fetch: up.fetch, now: () => NOW });
 
-  it('signs in with a password, sends slicer headers, and caches the token', async () => {
+  it('signs in with a password, sends no slicer headers, and caches the token', async () => {
     const up = createMockUpstream({ bambu: { devices: [{ dev_id: 'DEV1', name: 'Ada' }] } });
     const c = client(up);
     await c.init();
@@ -151,7 +151,7 @@ describe('BambuClient', () => {
     const [login, bind] = up.calls;
     assert.equal(login.url, 'https://api.bambulab.com/v1/user-service/user/login');
     assert.deepEqual(JSON.parse(login.body), { account: 'shop@example.com', password: 'pw', apiError: '' });
-    assert.equal(login.headers.get('x-bbl-client-type'), 'slicer');
+    assert.equal(login.headers.get('x-bbl-client-type'), null);
     assert.equal(bind.headers.get('authorization'), 'Bearer pw-token');
 
     const saved = JSON.parse(await fs.readFile(cfg.tokenCachePath, 'utf8'));
@@ -246,7 +246,22 @@ describe('BambuClient', () => {
 
   it('recognises Cloudflare blocks', async () => {
     const fetch = async () => new Response('<html><title>Attention Required! | Cloudflare</title></html>', { status: 403 });
-    await assert.rejects(new BambuClient(cfg, { fetch }).getDevices(), { code: 'bambu_cloudflare' });
+    await assert.rejects(new BambuClient(cfg, { fetch }).getDevices(), (err) => err.code === 'bambu_cloudflare' && /BAMBU_ACCESS_TOKEN/.test(err.hint));
+  });
+
+  it('does not suggest a new token when a request carrying one is blocked', async () => {
+    const fetch = async () => new Response('<html><title>Attention Required! | Cloudflare</title></html>', { status: 403 });
+    const c = new BambuClient({ ...cfg, accessToken: 'env-token' }, { fetch });
+    await assert.rejects(c.getDevices(), (err) => err.code === 'bambu_cloudflare'
+      && /user\/bind/.test(err.message) && /new token will not help/.test(err.hint));
+  });
+
+  it('does not claim to be a slicer, which Cloudflare blocks', async () => {
+    const up = createMockUpstream();
+    await client(up, { accessToken: 'env-token' }).getDevices();
+    const headers = [...up.calls[0].headers.keys()];
+    assert.deepEqual(headers.filter((k) => k.startsWith('x-bbl-')), []);
+    assert.doesNotMatch(up.calls[0].headers.get('user-agent') || '', /bambu_network_agent|OrcaSlicer/i);
   });
 
   it('pages back through the task history until it passes the window', async () => {

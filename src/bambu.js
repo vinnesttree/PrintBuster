@@ -2,29 +2,25 @@ import fs from 'node:fs/promises';
 import { SourceError } from './errors.js';
 import { ensureDir, PRIVATE_FILE_MODE, writeAtomic } from './files.js';
 
-// Endpoints and headers follow the community-documented Bambu cloud API
-// (OpenBambuAPI, ha-bambulab). China accounts use the .cn hosts.
+// Endpoints follow the community-documented Bambu cloud API (OpenBambuAPI,
+// ha-bambulab). China accounts use the .cn hosts.
 const HOSTS = {
   global: { api: 'https://api.bambulab.com', web: 'https://bambulab.com' },
   china: { api: 'https://api.bambulab.cn', web: 'https://bambulab.cn' },
 };
 
+// Only plain headers. Requests that claim to be a slicer (the OrcaSlicer /
+// bambu_network_agent headers) are refused by Bambu's Cloudflare with
+// "Attention Required!", while the same request without them is answered.
 const CLIENT_HEADERS = {
-  'User-Agent': 'bambu_network_agent/01.09.05.01',
-  'X-BBL-Client-Name': 'OrcaSlicer',
-  'X-BBL-Client-Type': 'slicer',
-  'X-BBL-Client-Version': '01.09.05.51',
-  'X-BBL-Language': 'en-US',
-  'X-BBL-OS-Type': 'linux',
-  'X-BBL-OS-Version': '6.2.0',
-  'X-BBL-Agent-Version': '01.09.05.01',
-  'X-BBL-Executable-info': '{}',
-  'X-BBL-Agent-OS-Type': 'linux',
   Accept: 'application/json',
 };
 
 const CLOUDFLARE_HINT =
   'Bambu\'s Cloudflare protection blocked the request. Sign in at makerworld.com in a browser, copy the value of its "token" cookie into BAMBU_ACCESS_TOKEN, and restart (README: "Finding a Bambu access token").';
+// When the request already carried a token, a new token won't help.
+const CLOUDFLARE_TOKEN_HINT =
+  'Bambu\'s Cloudflare protection blocked the request before the access token was checked, so a new token will not help. Cloudflare may be blocking this network address, or the way PrintBuster identifies itself (README: "If Cloudflare blocks requests that carry a token").';
 
 const FINISHED = new Set(['finish', 'finished', 'success', 'succeeded', 'completed', 'complete', 'done']);
 const FAILED = new Set(['fail', 'failed', 'failure', 'cancel', 'canceled', 'cancelled', 'abort', 'aborted', 'stopped']);
@@ -241,8 +237,8 @@ export class BambuClient {
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
     if ((res.status === 403 || res.status === 429) && /cloudflare/i.test(text)) {
-      throw new SourceError('The Bambu cloud blocked the request (Cloudflare).', {
-        code: 'bambu_cloudflare', status: res.status, hint: CLOUDFLARE_HINT,
+      throw new SourceError(`The Bambu cloud blocked the request to ${new URL(url).pathname} (Cloudflare, HTTP ${res.status}).`, {
+        code: 'bambu_cloudflare', status: res.status, hint: auth ? CLOUDFLARE_TOKEN_HINT : CLOUDFLARE_HINT,
       });
     }
     return { res, json, text };
