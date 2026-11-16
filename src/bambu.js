@@ -12,9 +12,30 @@ const HOSTS = {
 // Only plain headers. Requests that claim to be a slicer (the OrcaSlicer /
 // bambu_network_agent headers) are refused by Bambu's Cloudflare with
 // "Attention Required!", while the same request without them is answered.
+// Ask for English with the standard browser header (not X-BBL-Language, one
+// of the slicer headers): without a language, Bambu can return a MakerWorld
+// model's title (designTitle) in the design's original language, such as
+// Chinese or Japanese. taskTitle() covers the case where it still does.
 const CLIENT_HEADERS = {
   Accept: 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
 };
+
+// Chinese, Japanese and Korean scripts (CJK ideographs, kana, Hangul and
+// their punctuation and full-width forms).
+const CJK = /[\u3000-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/;
+
+// The model's name (its MakerWorld design title) when Bambu has one, else the
+// project name the print was sent with. A design title in Chinese, Japanese
+// or Korean while the project name is not means Bambu sent the design's
+// original-language title (prints logged without a language header did), so
+// the project name is the one people recognise.
+export function taskTitle(task) {
+  const design = String(task.designTitle ?? '').trim();
+  const project = String(task.title ?? '').trim();
+  if (design && project && CJK.test(design) && !CJK.test(project)) return project;
+  return design || project || 'Untitled print';
+}
 
 const CLOUDFLARE_HINT =
   'Bambu\'s Cloudflare protection blocked the request. Sign in at makerworld.com in a browser, copy the value of its "token" cookie into BAMBU_ACCESS_TOKEN, and restart (README: "Finding a Bambu access token").';
@@ -86,9 +107,7 @@ export function normalizeTask(task, deviceNames, nowMs, { confirmed = true } = {
 
   return {
     id: `bb-${task.id}`,
-    // The model's name (its MakerWorld design title) when Bambu has one, else
-    // the project name the print was sent with.
-    title: String(task.designTitle ?? '').trim() || String(task.title ?? '').trim() || 'Untitled print',
+    title: taskTitle(task),
     plate: task.plateName || (task.plateIndex ? `Plate ${task.plateIndex}` : ''),
     deviceId: task.deviceId || '',
     deviceName: deviceNames.get(task.deviceId) || task.deviceName || task.deviceId || 'Unknown printer',
