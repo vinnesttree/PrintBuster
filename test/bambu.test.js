@@ -44,6 +44,20 @@ describe('normalizeTask', () => {
     assert.equal(t({ title: '', designTitle: '' }), 'Untitled print');
   });
 
+  it('uses the project name when the model name came back in Chinese, Japanese or Korean', () => {
+    const t = (extra) => normalizeTask(task(9, 'DEV1', '2026-10-27T09:00', '2026-10-27T10:30', extra), names, NOW).title;
+    assert.equal(t({ title: 'Articulated Dragon', designTitle: '关节龙' }), 'Articulated Dragon');
+    assert.equal(t({ title: 'Cable Clip', designTitle: 'ケーブルクリップ' }), 'Cable Clip');
+    assert.equal(t({ title: 'Box', designTitle: '수납 상자' }), 'Box');
+    // Nothing better to fall back to: keep the model name.
+    assert.equal(t({ title: '', designTitle: '关节龙' }), '关节龙');
+    assert.equal(t({ title: '项目', designTitle: '关节龙' }), '关节龙');
+    // Any CJK in the model name counts (Chinese titles often hold "3D" or
+    // "PLA"), while an accented Latin model name still wins.
+    assert.equal(t({ title: 'Dragon', designTitle: '3D打印 Dragon 龙' }), 'Dragon');
+    assert.equal(t({ title: 'Untitled', designTitle: 'Café Sign' }), 'Café Sign');
+  });
+
   it('treats endTime == startTime as still printing and uses the slicer estimate', () => {
     const raw = task(8, 'DEV1', '2026-10-27T14:00', null, { status: 1, costTime: 7200 });
     const p = normalizeTask(raw, names, NOW);
@@ -152,6 +166,8 @@ describe('BambuClient', () => {
     assert.equal(login.url, 'https://api.bambulab.com/v1/user-service/user/login');
     assert.deepEqual(JSON.parse(login.body), { account: 'shop@example.com', password: 'pw', apiError: '' });
     assert.equal(login.headers.get('x-bbl-client-type'), null);
+    // Asks for English, so model names don't come back in Chinese or Japanese.
+    assert.match(bind.headers.get('accept-language'), /^en-US/);
     assert.equal(bind.headers.get('authorization'), 'Bearer pw-token');
 
     const saved = JSON.parse(await fs.readFile(cfg.tokenCachePath, 'utf8'));
