@@ -15,6 +15,7 @@ import { Collector } from './collector.js';
 import { ReservationImport } from './importer.js';
 import { BambuHistoryImport } from './bambuhistory.js';
 import { describeError, SourceError } from './errors.js';
+import { buildExport, exportFilename } from './export.js';
 import { guestComparison, guestConfig } from './guest.js';
 import { PrintLog } from './printlog.js';
 import { ReservationArchive } from './reservations.js';
@@ -473,6 +474,19 @@ export async function createApp(config, {
   app.use('/api/bambu', adminOnly);
   app.use('/api/accounts', adminOnly);
   app.get('/api/admin/status', (req, res) => res.json(adminStatus()));
+
+  // Downloads everything saved for the prints that started from `from` to
+  // `to` (inclusive local dates). Either may be left out: no limit that side.
+  app.get('/api/admin/export', (req, res) => {
+    const pick = (v) => (typeof v === 'string' ? v : undefined);
+    const data = buildExport({
+      service, live, config, from: pick(req.query.from), to: pick(req.query.to), now: now(),
+    });
+    const filename = exportFilename(data.range, todayIn(config.timezone, new Date(now())));
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.type('application/json');
+    res.send(redactSecrets(JSON.stringify(data, null, 2), secrets()));
+  });
 
   app.post('/api/admin/collect', async (req, res) => {
     await service.refreshNow();

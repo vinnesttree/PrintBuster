@@ -355,3 +355,71 @@ describe('admin: collection and status', () => {
     assert.match(collected.designhub.error.message, /rejected the username or password/);
   });
 });
+
+describe('admin: data export', () => {
+  it('downloads everything saved when no dates are given, and only the range when they are', async () => {
+    const api = await live({}, { collect: false });
+    // Two saved prints and reservation days far apart, and a hand assignment.
+    await api.app.locals.service.printLog.record({
+      tasks: [
+        { id: 'old', startTime: '2019-03-01T10:00:00Z', endTime: '2019-03-01T11:00:00Z', deviceId: 'D-ADA', title: 'Bracket' },
+        { id: 'new', startTime: '2026-10-20T15:00:00Z', endTime: '2026-10-20T16:00:00Z', deviceId: 'D-ADA', title: 'Gear' },
+      ],
+      fetchedAt: NOW,
+    });
+    const { reservationArchive, assignments } = api.app.locals.service;
+    await reservationArchive.save('2019-03-01', [{ id: 'r1', name: 'Jane Doe' }], { fetchedAt: NOW, final: true });
+    await reservationArchive.save('2026-10-20', [{ id: 'r2', name: 'Sam Lee' }], { fetchedAt: NOW, final: true });
+    await assignments.set('old', 'Jane Doe', { at: NOW, by: 'admin' });
+
+    const all = await api.get('/api/admin/export');
+    assert.equal(all.status, 200);
+    assert.match(all.headers.get('content-type'), /application\/json/);
+    assert.equal(all.headers.get('content-disposition'), 'attachment; filename="printbuster-export-beginning-to-2026-10-27.json"');
+    const body = await all.json();
+    assert.deepEqual(body.range, { from: null, to: null, start: null, end: null });
+    assert.deepEqual(body.prints.map((p) => p.id), ['old', 'new']);
+    assert.deepEqual(body.reservationDays.map((d) => d.date), ['2019-03-01', '2026-10-20']);
+    assert.deepEqual(body.assignments, [{ printId: 'old', name: 'Jane Doe', at: new Date(NOW).toISOString(), by: 'admin' }]);
+    assert.equal(body.counts.reservations, 2);
+    // Never accounts, sessions or credentials.
+    const text = JSON.stringify(body);
+    for (const secret of ['correct horse battery', 'secret', 'env-token', 'passwordHash', 'sessions']) {
+      assert.ok(!text.includes(secret), secret);
+    }
+
+    // Over seven years in one range: no limit on its length.
+    const ranged = await (await api.get('/api/admin/export?from=2019-03-01&to=2026-10-19')).json();
+    assert.deepEqual(ranged.prints.map((p) => p.id), ['old']);
+    assert.deepEqual(ranged.reservationDays.map((d) => d.date), ['2019-03-01']);
+    assert.equal(ranged.assignments.length, 1);
+
+    // Open on one side only.
+    const since = await api.get('/api/admin/export?from=2026-10-20');
+    assert.equal(since.headers.get('content-disposition'), 'attachment; filename="printbuster-export-2026-10-20-to-2026-10-27.json"');
+    const sinceBody = await since.json();
+    assert.deepEqual(sinceBody.prints.map((p) => p.id), ['new']);
+    assert.deepEqual(sinceBody.assignments, []);
+    const until = await (await api.get('/api/admin/export?to=2019-03-01')).json();
+    assert.deepEqual(until.prints.map((p) => p.id), ['old']);
+  });
+
+  it('rejects bad dates and is for admins only', async () => {
+    const api = await live({}, { collect: false });
+    const bad = await api.get('/api/admin/export?from=2026-13-01');
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).error.code, 'bad_date');
+    const backwards = await api.get('/api/admin/export?from=2026-10-20&to=2026-10-01');
+    assert.equal((await backwards.json()).error.code, 'bad_range');
+
+    assert.equal((await api.post('/api/accounts', { username: 'staffer', password: 'staff password 1', role: 'staff' })).status, 201);
+    const login = await fetch(`${api.base}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'staffer', password: 'staff password 1' }),
+    });
+    const staff = await fetch(`${api.base}/api/admin/export`, { headers: { Cookie: login.headers.get('set-cookie').split(';')[0] } });
+    assert.equal(staff.status, 403);
+    // Not signed in at all.
+    assert.equal((await fetch(`${api.base}/api/admin/export`)).status, 401);
+  });
+});

@@ -29,6 +29,7 @@ The **Admin** page (`/admin.html`) holds every button that makes PrintBuster ask
 - **Import Bambu print history** reads the account's whole Bambu print history into the print log, back before PrintBuster started. See [Importing Bambu history](#importing-bambu-history).
 - **Import reservations** reads every day in a date range from Design Hub and saves its reservations. See [Importing reservations](#importing-reservations).
 - **Filament usage** has **Recalculate total**.
+- **Export data** downloads everything saved for a date range, or for all time, as one JSON file. See [Exporting data](#exporting-data).
 
 - **Accounts** lists who can sign in, and adds, changes and deletes accounts. See [Accounts and the guest view](#accounts-and-the-guest-view).
 
@@ -381,6 +382,16 @@ Each collection only reads the last couple of days of Bambu's print history. To 
 - **Recalculate all-time usage afterwards** (ticked by default) runs **Recalculate total** once it ends. Old prints are charged to members only for days whose reservations are saved, so [import the reservations](#importing-reservations) for the same days too, before or after.
 - It stops at `BAMBU_HISTORY_MAX_PAGES` pages (default 400, so 20,000 prints) and says so. Raise it if the account has more prints than that.
 - The print log's observed time then starts at the oldest print read, so older days no longer show "No Bambu print data".
+
+### Exporting data
+
+**Export data** on the Admin page downloads one JSON file holding everything PrintBuster has saved for a date range: the print log (with the spans it was observing), the live feed's prints, pauses and coverage, the saved agenda days and their reservations, the calculated usage of each print, and the prints assigned to members by hand. Dates are local days in `TIMEZONE`; prints and pauses count by when they started.
+
+- There is no limit on the range. Leave **From** empty to start at the oldest saved data, **To** empty to run to the newest, or press **All time** to clear both and export everything.
+- A hand assignment goes with its print's start time, or when it was made if its print isn't in any log.
+- Accounts, sign-ins and credentials are never included, but the file holds members' names and print titles, so keep it private.
+- Admins can also fetch it directly: `GET /api/admin/export?from=YYYY-MM-DD&to=YYYY-MM-DD`, either parameter optional.
+- Demo mode keeps no print log, so its export holds only the generated reservations and usage.
 
 ## Limitations
 

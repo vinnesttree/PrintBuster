@@ -180,6 +180,36 @@
         <span id="usage-msg" class="muted" role="status"></span>
       </div>
     </section>
+
+    <section id="export" class="card" aria-labelledby="export-title">
+      <div class="card-head">
+        <div>
+          <h2 id="export-title">Export data</h2>
+          <p class="muted">Download everything saved for a date range as one JSON file.</p>
+        </div>
+        <p class="muted rules">
+          Includes the print log, prints and pauses from the live feed, the saved reservations, calculated filament usage and prints assigned by hand,
+          for prints that started (and agenda days) from the first date to the last, in the server's time zone.
+          Leave a date empty for no limit on that side; leave both empty to export everything.
+          Accounts, sign-ins and credentials are never included. The file holds members' names, so keep it private.
+        </p>
+      </div>
+      <form id="export-form" class="admin-form">
+        <div class="control-group">
+          <label class="field">From <input id="export-from" type="date"></label>
+          <label class="field">To <input id="export-to" type="date"></label>
+          <div class="presets" role="group" aria-label="Quick ranges">
+            <button class="btn" type="button" data-export-days="30">30 days</button>
+            <button class="btn" type="button" data-export-days="365">1 year</button>
+            <button id="export-all" class="btn" type="button">All time</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <button id="export-download" class="btn btn-primary" type="submit">Download</button>
+          <span id="export-msg" class="muted" role="status"></span>
+        </div>
+      </form>
+    </section>
   </main>
 </body>
 </html>

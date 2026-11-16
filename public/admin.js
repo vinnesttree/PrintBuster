@@ -245,6 +245,50 @@ const recalculateTotal = () => action($('#recalc-total'), $('#usage-msg'), 'Reca
   return `Recalculated ${plural(usageLog.lastTotalRecalculation.prints, 'print')}.`;
 });
 
+function exportRangeText() {
+  const from = $('#export-from').value;
+  const to = $('#export-to').value;
+  if (!from && !to) return 'everything';
+  if (!from) return `everything up to ${fmtDay(to)}`;
+  if (!to) return `everything from ${fmtDay(from)}`;
+  return `${fmtDay(from)} to ${fmtDay(to)}`;
+}
+
+function renderExportNote() {
+  $('#export-msg').textContent = `Exports ${exportRangeText()}.`;
+}
+
+// Downloads the export as a file. Fetched rather than linked, so an error
+// shows here instead of replacing the page.
+async function downloadExport(e) {
+  e.preventDefault();
+  const from = $('#export-from').value;
+  const to = $('#export-to').value;
+  if (from && to && from > to) {
+    $('#export-msg').textContent = 'The start date is after the end date.';
+    return;
+  }
+  await action($('#export-download'), $('#export-msg'), 'Preparing the export…', async () => {
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    const res = await apiFetch(`/api/admin/export${params.toString() ? `?${params}` : ''}`);
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new Error(errorText(json?.error) || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || 'printbuster-export.json';
+    const url = URL.createObjectURL(blob);
+    const link = el('a', { href: url, download: name, hidden: true });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return `Downloaded ${exportRangeText()} (${name}).`;
+  });
+}
+
 async function bambuCode(e) {
   e.preventDefault();
   await action($('#bambu-verify'), $('#bambu-msg'), 'Checking the code…', async () => {
@@ -528,6 +572,23 @@ async function init() {
   $('#bambu-form').addEventListener('submit', bambuCode);
   $('#bambu-restart').addEventListener('click', bambuRestart);
   $('#account-form').addEventListener('submit', addAccount);
+  for (const btn of document.querySelectorAll('[data-export-days]')) {
+    btn.addEventListener('click', () => {
+      const to = $('#export-to').value || state.config.today;
+      $('#export-to').value = to;
+      $('#export-from').value = shift(to, -(Number(btn.dataset.exportDays) - 1));
+      renderExportNote();
+    });
+  }
+  $('#export-all').addEventListener('click', () => {
+    $('#export-from').value = '';
+    $('#export-to').value = '';
+    renderExportNote();
+  });
+  $('#export-from').addEventListener('input', renderExportNote);
+  $('#export-to').addEventListener('input', renderExportNote);
+  $('#export-form').addEventListener('submit', downloadExport);
+  renderExportNote();
   $('#history-start').addEventListener('click', startHistory);
   $('#history-stop').addEventListener('click', stopHistory);
   // Shows each collection's result as the server finishes it.
